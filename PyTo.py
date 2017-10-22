@@ -1,5 +1,6 @@
 from BEncoding import Bdecode, Bencode
 import urllib.request
+import urllib.parse
 from hashlib import sha1
 
 class peer:
@@ -27,18 +28,19 @@ class metainfo:
     def tracker_get(self):
         h = {
             'info_hash': self.info_hash,
-            'peer_id': "ABCDEFGHIJKLMNOPQRST",
-            #'ip':
+            'peer_id': "-HT00000000000000000",
             'port': 6881,
             'uploaded': 0,
-            'download': self.info[b'length'],
-            'left': self.info[b'length']
-            #'event':
+            'downloaded': 0,
+            'left': self.info[b'length'],
+            'event': "started",
+            'compact': 1
         }
 
-        req = urllib.request.Request(url=self.announce.decode(), headers=h)
-        with urllib.request.urlopen(req) as response:
-            print(response.read().decode('utf8'))
+        url = "%s?%s" % (self.announce.decode(), urllib.parse.urlencode(h))
+        print(url)
+        with urllib.request.urlopen(url) as response:
+            print(response.read())
 
 
 class torrent:
@@ -47,4 +49,6 @@ class torrent:
         self.peers = {}
 
 
-
+if __name__ == '__main__':
+    m = metainfo("./data/torrent files/archlinux-2017.10.01-x86_64.iso.torrent")
+    m.tracker_get()

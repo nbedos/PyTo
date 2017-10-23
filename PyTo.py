@@ -40,7 +40,30 @@ class metainfo:
         url = "%s?%s" % (self.announce.decode(), urllib.parse.urlencode(h))
         print(url)
         with urllib.request.urlopen(url) as response:
-            print(response.read())
+            d = Bdecode(response.read())
+            peers = list(map(_bytes_to_ipv4_port, _split(d[b"peers"], 6)))
+            print(peers)
+
+
+def _split(l, n):
+    """Split the list l in chunks of size n"""
+    if n < 0:
+        raise ValueError("n must be >= 0")
+    i = 0
+    L = []
+    while l[i:i+n]:
+        L.append(l[i:i+n])
+        i = i + n
+    return L
+
+
+def _bytes_to_ipv4_port(b):
+    ipv4 = "%i.%i.%i.%i" % (int.from_bytes(b[0:1], "big"),
+                            int.from_bytes(b[1:2], "big"),
+                            int.from_bytes(b[2:3], "big"),
+                            int.from_bytes(b[3:4], "big"))
+    port = int.from_bytes(b[4:6], "big")
+    return (ipv4, port)
 
 
 class torrent:

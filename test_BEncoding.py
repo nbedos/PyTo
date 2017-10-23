@@ -43,7 +43,9 @@ class test_Bdecode(TestCase):
             # Dictionary key must be a string
             b"di42e4:spame",
             # Dictionary with no terminating "e"
-            b"d4:spami42e4:spomi43e"
+            b"d4:spami42e4:spomi43e",
+            # Bad key ordering
+            b"d3:tow3:moo4:spam4:eggse",
             # Invalid integers
             b"i2Fe",
             b"ie",

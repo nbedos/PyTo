@@ -9,7 +9,11 @@ class peer:
         self.port = port
         self.choking = True
         self.choked = True
-
+    def __repr__(self):
+        return "peer({}:{}, choking={}, choked={})".format(self.ip,
+                                                           self.port,
+                                                           self.choking,
+                                                           self.choked)
 
 class metainfo:
     def __init__(self, torrent_file):
@@ -25,25 +29,8 @@ class metainfo:
             pass
         raise ValueError("Invalid metainfo")
 
-    def tracker_get(self):
-        h = {
-            'info_hash': self.info_hash,
-            'peer_id': "-HT00000000000000000",
-            'port': 6881,
-            'uploaded': 0,
-            'downloaded': 0,
-            'left': self.info[b'length'],
-            'event': "started",
-            'compact': 1
-        }
-
-        url = "%s?%s" % (self.announce.decode(), urllib.parse.urlencode(h))
-        print(url)
-        with urllib.request.urlopen(url) as response:
-            d = Bdecode(response.read())
-            peers = list(map(_bytes_to_ipv4_port, _split(d[b"peers"], 6)))
-            print(peers)
-
+    def __repr__(self):
+        return "metainfo:\n\tannounce: {}".format(self.announce.decode())
 
 def _split(l, n):
     """Split the list l in chunks of size n"""
@@ -58,20 +45,42 @@ def _split(l, n):
 
 
 def _bytes_to_ipv4_port(b):
-    ipv4 = "%i.%i.%i.%i" % (int.from_bytes(b[0:1], "big"),
-                            int.from_bytes(b[1:2], "big"),
-                            int.from_bytes(b[2:3], "big"),
-                            int.from_bytes(b[3:4], "big"))
+    ipv4 = "{}.{}.{}.{}".format(int.from_bytes(b[0:1], "big"),
+                                int.from_bytes(b[1:2], "big"),
+                                int.from_bytes(b[2:3], "big"),
+                                int.from_bytes(b[3:4], "big"))
     port = int.from_bytes(b[4:6], "big")
-    return (ipv4, port)
+    return peer(ipv4, port)
 
 
 class torrent:
     def __init__(self, torrent_file):
         self.metainfo = metainfo(torrent_file)
-        self.peers = {}
+        self.peers = []
+
+    def tracker_get(self):
+        """Send an announce query to the tracker"""
+        m = self.metainfo
+        h = {
+            'info_hash': m.info_hash,
+            'peer_id': "-HT00000000000000000",
+            'port': 6881,
+            'uploaded': 0,
+            'downloaded': 0,
+            'left': m.info[b'length'],
+            'event': "started",
+            'compact': 1
+        }
+
+        url = "{}?{}".format(m.announce.decode(), urllib.parse.urlencode(h))
+        print(url)
+        with urllib.request.urlopen(url) as response:
+            d = Bdecode(response.read())
+            self.peers = list(map(_bytes_to_ipv4_port, _split(d[b"peers"], 6)))
 
 
 if __name__ == '__main__':
-    m = metainfo("./data/torrent files/archlinux-2017.10.01-x86_64.iso.torrent")
-    m.tracker_get()
+    t = torrent("./data/torrent files/archlinux-2017.10.01-x86_64.iso.torrent")
+    print(t.metainfo)
+    t.tracker_get()
+    print(t.peers)

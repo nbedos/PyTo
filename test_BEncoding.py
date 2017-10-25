@@ -23,6 +23,8 @@ validBEncodings = {
                                                                   b"spom": {b"cow": b"moo", b"spam": b"eggs"}},
     # Empty dictionary
     b"de": {},
+    # Keys of a dictionary must be sorted (byte order, not lexicogaphical order)
+    b"d1:ai2e1:bi1ee": {b'b': 1, b'a':2}
 }
 
 class test_Bdecode(TestCase):

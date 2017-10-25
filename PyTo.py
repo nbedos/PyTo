@@ -23,6 +23,7 @@ class metainfo:
         try:
             self.announce = m[b'announce']
             self.info = m[b'info']
+            # Binary form of the SHA1 hash
             self.info_hash = sha1(Bencode(self.info)).digest()
             return
         except KeyError:

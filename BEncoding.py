@@ -1,3 +1,5 @@
+from struct import *
+
 def Bdecode(s):
     """ Decode the Bencoded value stored in the bytestring"""
     if isinstance(s, bytes):

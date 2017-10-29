@@ -18,31 +18,6 @@ class peer:
                                                            self.choking,
                                                            self.choked)
 
-    def keep_alive(self):
-        return b"\x00\x00\x00\x00"
-
-    def choke(self):
-        return b"\x00\x00\x00\x01\x00"
-
-    def unchoke(self):
-        return b"\x00\x00\x00\x01\x01"
-
-    def interested(self):
-        return b"\x00\x00\x00\x01\x02"
-
-    def not_interested(self):
-        return b"\x00\x00\x00\x01\x03"
-
-    def have(self, piece_index):
-        return pack(">ii", 5, piece_index)
-
-    def bitfield(self, m):
-        return None
-
-
-
-
-
 
 def handshake(info_hash):
     # Length of the string identifier of the protocol (1 byte)

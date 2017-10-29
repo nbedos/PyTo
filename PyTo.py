@@ -1,10 +1,9 @@
-from BEncoding import Bdecode, Bencode
+from BEncoding import bdecode, bencode
 import urllib.request
 import urllib.parse
 from hashlib import sha1
 import asyncio
-
-from struct import *
+from Messages import *
 
 class peer:
     def __init__(self, ip, port):
@@ -12,6 +11,7 @@ class peer:
         self.port = port
         self.choking = True
         self.choked = True
+
     def __repr__(self):
         return "peer({}:{}, choking={}, choked={})".format(self.ip,
                                                            self.port,
@@ -36,35 +36,35 @@ def handshake(info_hash):
                      peer_id])
 
 
-class metainfo:
+class Metainfo:
     def __init__(self, torrent_file):
         # TODO: Check if all necessary keys are in the info dictionary
         with open(torrent_file, "rb") as f:
-            m = Bdecode(f.read())
+            m = bdecode(f.read())
 
         try:
             self.announce = m[b'announce']
             self.info = m[b'info']
             # Binary form of the SHA1 hash
-            self.info_hash = sha1(Bencode(self.info)).digest()
+            self.info_hash = sha1(bencode(self.info)).digest()
             return
         except KeyError:
             pass
-        raise ValueError("Invalid metainfo")
+        raise ValueError("Invalid Metainfo")
 
     def __repr__(self):
-        return "metainfo:\n\tannounce: {}".format(self.announce.decode())
+        return "Metainfo:\n\tannounce: {}".format(self.announce.decode())
 
 def _split(l, n):
     """Split the list l in chunks of size n"""
     if n < 0:
         raise ValueError("n must be >= 0")
     i = 0
-    L = []
+    chunks = []
     while l[i:i+n]:
-        L.append(l[i:i+n])
+        chunks.append(l[i:i+n])
         i = i + n
-    return L
+    return chunks
 
 
 def _bytes_to_ipv4_port(b):
@@ -78,9 +78,9 @@ def _bytes_to_ipv4_port(b):
     return peer(ipv4, port)
 
 
-class torrent:
+class Torrent:
     def __init__(self, torrent_file):
-        self.metainfo = metainfo(torrent_file)
+        self.metainfo = Metainfo(torrent_file)
         self.peers = []
 
         self.piece_length = self.metainfo.info[b"piece length"]
@@ -109,7 +109,7 @@ class torrent:
         url = "{}?{}".format(m.announce.decode(), urllib.parse.urlencode(h))
         print(url)
         with urllib.request.urlopen(url) as response:
-            d = Bdecode(response.read())
+            d = bdecode(response.read())
             self.peers = list(map(_bytes_to_ipv4_port, _split(d[b"peers"], 6)))
 
 
@@ -140,8 +140,8 @@ async def tcp_handshake(peer, loop):
 
 
 if __name__ == '__main__':
-    # t = torrent("./data/torrent files/archlinux-2017.10.01-x86_64.iso.torrent")
-    t = torrent("./data/torrent files/archlinux-2017.10.01-x86_64.iso.torrent")
+    # t = Torrent("./data/Torrent files/archlinux-2017.10.01-x86_64.iso.Torrent")
+    t = Torrent("./data/Torrent files/archlinux-2017.10.01-x86_64.iso.Torrent")
     print(t.metainfo)
     t.tracker_get()
     print(t.peers)
@@ -151,6 +151,3 @@ if __name__ == '__main__':
     loop.run_until_complete(asyncio.gather(*coroutines))
 
     loop.close()
-
-
-

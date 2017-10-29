@@ -13,6 +13,26 @@ class Message:
         else:
             raise TypeError("message_id must be an integer or None")
 
+    #TODO: Check this - https://stackoverflow.com/questions/390250/elegant-ways-to-support-equivalence-equality-in-python-classes
+    def __eq__(self, other):
+        """Override the default Equals behavior"""
+        if isinstance(other, self.__class__):
+            return self.__dict__ == other.__dict__
+        return NotImplemented
+
+    def __ne__(self, other):
+        """Define a non-equality test"""
+        if isinstance(other, self.__class__):
+            return not self.__eq__(other)
+        return NotImplemented
+
+    #def __hash__(self):
+    #    """Override the default hash behavior (that returns the id or the object)"""
+    #    return hash(tuple(sorted(self.__dict__.items())))
+
+    def __repr__(self):
+        return "{0}: {1}".format(self.__class__, sorted(self.__dict__.items()))
+
     def to_bytes(self):
         if self.message_id is None:
             return pack(">I", self.length)
@@ -45,6 +65,27 @@ class Message:
         PAYLOAD_OFFSET = LENGTH_SIZE+1
         rest_offset = LENGTH_SIZE + message_length
         # CHOKE
+
+        """from_bytes_funcs = {
+            0: Choke.from_bytes,
+            1: Unchoke.from_bytes,
+            2: Interested.from_bytes,
+            3: NotInterested.from_byte,
+            4: Have.from_bytes,
+            5: BitField.from_bytes,
+            6: Request.from_bytes,
+            7: Piece.from_bytes,
+            8: Cancel.from_bytes,
+            9: Port.from_bytes
+        }
+        
+        try:
+            return from_bytes_funcs[message_length]
+        except KeyError:
+            pass
+        
+        raise ValueError("Invalid message id")"""
+
         if message_id == 0 and message_length == 1:
             return Choke(), buffer[rest_offset:]
         # UNCHOKE
@@ -58,7 +99,7 @@ class Message:
             return NotInterested(), buffer[rest_offset:]
         # HAVE
         elif message_id == 4 and message_length == 5:
-            piece_index, = unpack(">I", buffer[PAYLOAD_OFFSET])
+            piece_index, = unpack(">I", buffer[PAYLOAD_OFFSET:PAYLOAD_OFFSET+4])
             return Have(piece_index), buffer[rest_offset:]
         # BITFIELD
         elif message_id == 5:

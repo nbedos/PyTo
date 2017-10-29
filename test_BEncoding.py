@@ -1,22 +1,22 @@
 from unittest import TestCase
-from BEncoding import Bdecode, Bencode
+from BEncoding import bdecode, bencode
 import os
 
 validBEncodings = {
-    ### INTEGERS
+    # INTEGERS
     b"i24e": 24,
     b"i-24e": -24,
-    ### STRINGS
+    # STRINGS
     b"4:spam": b"spam",
     # Empty string
     b"0:": b"",
-    ### LISTS
+    # LISTS
     b"l4:spam4:spami42ee": [b"spam", b"spam", 42],
     # Empty list
     b"le": [],
     # List of a dictionary and a list
     b"ll4:spam4:spami42eed3:cow3:moo4:spam4:eggsee": [[b"spam", b"spam", 42], {b"cow": b"moo", b"spam": b"eggs"}],
-    ### DICTIONARIES
+    # DICTIONARIES
     b"d3:cow3:moo4:spam4:eggse": {b"cow": b"moo", b"spam": b"eggs"},
     # Dictionary of list and dictionary
     b"d4:spaml4:spam4:spami42ee4:spomd3:cow3:moo4:spam4:eggsee": {b"spam": [b"spam", b"spam", 42],
@@ -24,17 +24,17 @@ validBEncodings = {
     # Empty dictionary
     b"de": {},
     # Keys of a dictionary must be sorted (byte order, not lexicogaphical order)
-    b"d1:ai2e1:bi1ee": {b'b': 1, b'a':2}
+    b"d1:ai2e1:bi1ee": {b'b': 1, b'a': 2}
 }
 
-class test_Bdecode(TestCase):
+class TestBdecode(TestCase):
     def test_Bdecode_success(self):
         for (key, value) in validBEncodings.items():
-            with self.subTest(case=key, expected=value, result=Bdecode(key)):
-                self.assertEqual(Bdecode(key), value)
+            with self.subTest(case=key, expected=value, result=bdecode(key)):
+                self.assertEqual(bdecode(key), value)
 
     def test_Bdecode_failure(self):
-         failCases = [
+        fail_cases = [
             # Invalid string lengths
             b"4:spa",
             b"2:spa"
@@ -60,41 +60,41 @@ class test_Bdecode(TestCase):
             b"i1,0e",
             # List with no terminating "e"
             b"li42ei43e"
-         ]
-         for testCase in failCases:
+        ]
+        for testCase in fail_cases:
             with self.subTest(testCase=testCase):
                 with self.assertRaises(ValueError, msg="case '{0}'".format(testCase)):
-                    print(Bdecode(testCase))
+                    print(bdecode(testCase))
 
 
-class test_Bencode(TestCase):
+class TestBencode(TestCase):
     def test_Bencode_success(self):
         for (key, value) in validBEncodings.items():
-            with self.subTest(case=value, expected=key, result=Bencode(value)):
-                self.assertEqual(Bencode(value), key)
+            with self.subTest(case=value, expected=key, result=bencode(value)):
+                self.assertEqual(bencode(value), key)
 
     def test_Bencode_failure(self):
-         failCases = [
+        fail_cases = [
             # Number but not an integer
             1.0,
             # String instead of a bytestring
             "a",
             # Dictionary keys must be strings
             {1: b"a", 2: b"b"},
-         ]
-         for testCase in failCases:
+        ]
+        for testCase in fail_cases:
             with self.subTest(testCase=testCase):
                 with self.assertRaises(ValueError, msg="case '{0}'".format(testCase)):
-                    print(Bencode(testCase))
+                    print(bencode(testCase))
 
 
-class test_Torrent(TestCase):
+class TestTorrent(TestCase):
     def test_torrent_idempotence(self):
-        # Decode whole torrent files
-        os.chdir("./data/torrent files/")
+        # Decode whole Torrent files
+        os.chdir("./data/Torrent files/")
         for file in os.listdir():
             filename = os.fsdecode(file)
             with open(filename, "rb") as f:
                 with self.subTest(filename=filename):
                     s = f.read()
-                    self.assertEqual(s, Bencode(Bdecode(s)))
+                    self.assertEqual(s, bencode(bdecode(s)))

@@ -1,5 +1,6 @@
 from struct import pack, unpack
 
+
 class Message:
     def __init__(self, length, message_id):
         if length >= 0:
@@ -29,15 +30,15 @@ class Message:
         # First, attempt reading the "length" prefix of the message which is LENGTH_SIZE bytes long
         LENGTH_SIZE = 4
         buffer_length = len(buffer)
-        if buffer_length < LENGTH_SIZE:
-            return (None, buffer)
+        if LENGTH_SIZE > buffer_length:
+            return None, buffer
         message_length, = unpack(">I", buffer[0:LENGTH_SIZE])
         if message_length == 0:
-            return (KeepAlive(), buffer[LENGTH_SIZE:])
+            return KeepAlive(), buffer[LENGTH_SIZE:]
 
         # Second, check if we've got the full message in the buffer
         if buffer_length < LENGTH_SIZE + message_length:
-            return (None, buffer)
+            return None, buffer
 
         # At this point message_length is at least 1 so we can read the message_id from the buffer
         message_id, = unpack(">B", buffer[LENGTH_SIZE:LENGTH_SIZE+1])
@@ -45,42 +46,42 @@ class Message:
         rest_offset = LENGTH_SIZE + message_length
         # CHOKE
         if message_id == 0 and message_length == 1:
-            return (Choke(), buffer[rest_offset:])
+            return Choke(), buffer[rest_offset:]
         # UNCHOKE
         elif message_id == 1 and message_length == 1:
-            return (Unchoke(), buffer[rest_offset:])
+            return Unchoke(), buffer[rest_offset:]
         # INTERESTED
         elif message_id == 2 and message_length == 1:
-            return (Interested(), buffer[rest_offset:])
+            return Interested(), buffer[rest_offset:]
         # NOT INTERESTED
         elif message_id == 3 and message_length == 1:
-            return (NotInterested(), buffer[rest_offset:])
+            return NotInterested(), buffer[rest_offset:]
         # HAVE
         elif message_id == 4 and message_length == 5:
             piece_index, = unpack(">I", buffer[PAYLOAD_OFFSET])
-            return (Have(piece_index), buffer[rest_offset:])
+            return Have(piece_index), buffer[rest_offset:]
         # BITFIELD
         elif message_id == 5:
             bitfield_size = message_length-1
             bitfield = buffer[PAYLOAD_OFFSET:PAYLOAD_OFFSET+bitfield_size]
-            return (BitField(bitfield, bitfield_size), buffer[rest_offset:])
+            return BitField(bitfield, bitfield_size), buffer[rest_offset:]
         # REQUEST
         elif message_id == 6 and message_length == 13:
             piece_index, block_offset, block_length = unpack(">III", buffer[PAYLOAD_OFFSET:PAYLOAD_OFFSET+message_length-1])
-            return (Request(piece_index, block_offset, block_length), buffer[rest_offset:])
+            return Request(piece_index, block_offset, block_length), buffer[rest_offset:]
         # PIECE
         elif message_id == 7 and message_length > 9:
             block_length = message_length - 9
             piece_index, block_offset, block = unpack(">II{}s".format(block_length), buffer)
-            return (Piece(block_length, piece_index, block_offset, block), buffer[rest_offset:])
+            return Piece(block_length, piece_index, block_offset, block), buffer[rest_offset:]
         # CANCEL
         elif message_id == 8 and message_length == 13:
             piece_index, block_offset, block_length = unpack(">III", buffer[PAYLOAD_OFFSET:PAYLOAD_OFFSET+message_length-1])
-            return (Cancel(piece_index, block_offset, block_length), buffer[rest_offset:])
+            return Cancel(piece_index, block_offset, block_length), buffer[rest_offset:]
         # PORT
         elif message_id == 9 and message_length == 5:
             listen_port = unpack(">I", buffer[PAYLOAD_OFFSET:PAYLOAD_OFFSET+message_length-1])
-            return (Port(listen_port), buffer[rest_offset:])
+            return Port(listen_port), buffer[rest_offset:]
 
         raise ValueError("Invalid message")
 
@@ -91,12 +92,14 @@ class KeepAlive(Message):
     def __init__(self):
         super(KeepAlive, self).__init__(0, None)
 
+
 class Choke(Message):
     """CHOKE = <length><message id>
         - length = 1 (4 bytes)
         - message id = 0 (1 byte)"""
     def __init__(self):
         super(Choke, self).__init__(1, 0)
+
 
 class Unchoke(Message):
     """UNCHOKE = <length><message id>
@@ -105,12 +108,14 @@ class Unchoke(Message):
     def __init__(self):
         super(Unchoke, self).__init__(1, 1)
 
+
 class Interested(Message):
     """INTERESTED = <length><message id>
         - length = 1 (4 bytes)
         - message id = 2 (1 byte)"""
-    def __init__(self, length):
+    def __init__(self):
         super(Interested, self).__init__(1, 2)
+
 
 class NotInterested(Message):
     """NOT INTERESTED = <length><message id>
@@ -118,6 +123,7 @@ class NotInterested(Message):
         - message id = 3 (1 byte)"""
     def __init__(self):
         super(NotInterested, self).__init__(1, 3)
+
 
 class Have(Message):
     """ HAVE = <length><message id><piece index>
@@ -129,9 +135,11 @@ class Have(Message):
         self.piece_index = piece_index
 
     def to_bytes(self):
-        return pack(">IBI", self.length,
-                            self.message_id,
-                            self.piece_index)
+        return pack(">IBI",
+                    self.length,
+                    self.message_id,
+                    self.piece_index)
+
 
 class BitField(Message):
     """BITFIELD = <length><message id><bitfield>
@@ -144,9 +152,11 @@ class BitField(Message):
         self.bitfield = bitfield
 
     def to_bytes(self):
-        return pack(">IB{}s".format(self.bitfield_size), self.length,
-                                                         self.message_id,
-                                                         self.bitfield)
+        return pack(">IB{}s".format(self.bitfield_size),
+                    self.length,
+                    self.message_id,
+                    self.bitfield)
+
 
 class Request(Message):
     """REQUEST = <length><message id><piece index><block offset><block length>
@@ -162,11 +172,13 @@ class Request(Message):
         self.block_length = block_length
 
     def to_bytes(self):
-        return pack(">IBIII", self.length,
-                              self.message_id,
-                              self.piece_index,
-                              self.block_offset,
-                              self.block_length)
+        return pack(">IBIII",
+                    self.length,
+                    self.message_id,
+                    self.piece_index,
+                    self.block_offset,
+                    self.block_length)
+
 
 class Piece(Message):
     """PIECE = <length><message id><piece index><block offset><block>
@@ -183,11 +195,13 @@ class Piece(Message):
         self.block = block
 
     def to_bytes(self):
-        return pack(">IBII{}s".format(self.block_length), self.length,
-                                                          self.message_id,
-                                                          self.piece_index,
-                                                          self.block_offset,
-                                                          self.block)
+        return pack(">IBII{}s".format(self.block_length),
+                    self.length,
+                    self.message_id,
+                    self.piece_index,
+                    self.block_offset,
+                    self.block)
+
 
 class Cancel(Message):
     """CANCEL = <length><message id><piece index><block offset><block length>
@@ -203,11 +217,13 @@ class Cancel(Message):
         self.block_length = block_length
 
     def to_bytes(self):
-        return pack(">IBIII", self.length,
-                              self.message_id,
-                              self.piece_index,
-                              self.block_offset,
-                              self.block_length)
+        return pack(">IBIII",
+                    self.length,
+                    self.message_id,
+                    self.piece_index,
+                    self.block_offset,
+                    self.block_length)
+
 
 class Port(Message):
     """PORT = <length><message id><port number>
@@ -219,15 +235,15 @@ class Port(Message):
         self.listen_port = listen_port
 
     def to_bytes(self):
-        return pack(">IBI", self.length,
-                            self.message_id,
-                            self.listen_port)
-
+        return pack(">IBI",
+                    self.length,
+                    self.message_id,
+                    self.listen_port)
 
 
 if __name__ == "__main__":
-    m = Cancel(1,2,3)
-    n = Cancel(1,2,3)
+    m = Cancel(1, 2, 3)
+    n = Cancel(1, 2, 3)
     print(m.to_bytes())
     print(Message.from_bytes(m.to_bytes()) == m)
     print(m == n)

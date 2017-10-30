@@ -1,4 +1,4 @@
-def bdecode(s):
+def bdecode(s: bytes):
     """ Decode the Bencoded value stored in the bytestring"""
     if isinstance(s, bytes):
         b, remainder = _bdecode_partial(s)
@@ -10,7 +10,7 @@ def bdecode(s):
     raise ValueError("Invalid Bencoded string (must be bytestring)")
 
 
-def _bdecode_partial(s):
+def _bdecode_partial(s: bytes):
     """ Return the first Bencoded value read from the bytestring,
     and the remainder of the bytestring.
 
@@ -86,7 +86,7 @@ def bencode(o):
         raise ValueError("Invalid object (object must be a bytestring, an integer, a list or a dictionary)")
 
 
-def _BencodeDictItem(key, value):
+def _BencodeDictItem(key: bytes, value):
     if isinstance(key, bytes):
         return bencode(key) + bencode(value)
     raise ValueError("Invalid object (dictionary key must be a bytestring)")

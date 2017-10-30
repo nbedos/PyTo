@@ -2,26 +2,17 @@ from struct import pack, unpack
 
 
 class Message:
-    def __init__(self, length, message_id):
-        if length >= 0:
-            self.length = length
-        else:
-            raise ValueError("Message length must be >= 0")
-
-        if (message_id is None) or isinstance(message_id, int):
-            self.message_id = message_id
-        else:
-            raise TypeError("message_id must be an integer or None")
+    def __init__(self, length: int, message_id: int):
+        self.length = length
+        self.message_id = message_id
 
     #TODO: Check this - https://stackoverflow.com/questions/390250/elegant-ways-to-support-equivalence-equality-in-python-classes
     def __eq__(self, other):
-        """Override the default Equals behavior"""
         if isinstance(other, self.__class__):
             return self.__dict__ == other.__dict__
         return NotImplemented
 
     def __ne__(self, other):
-        """Define a non-equality test"""
         if isinstance(other, self.__class__):
             return not self.__eq__(other)
         return NotImplemented
@@ -33,14 +24,14 @@ class Message:
     def __repr__(self):
         return "{0}: {1}".format(self.__class__, sorted(self.__dict__.items()))
 
-    def to_bytes(self):
+    def to_bytes(self) -> bytes:
         if self.message_id is None:
             return pack(">I", self.length)
         else:
             return pack(">IB", self.length, self.message_id)
 
     @classmethod
-    def from_bytes(cls, buffer):
+    def from_bytes(cls, buffer: bytes):
         """Read a bytestring and return a tuple containing the corresponding Subclass instance along
         with the rest of the bytestring.
 
@@ -113,7 +104,7 @@ class Message:
         # PIECE
         elif message_id == 7 and message_length > 9:
             block_length = message_length - 9
-            piece_index, block_offset, block = unpack(">II{}s".format(block_length), buffer)
+            piece_index, block_offset, block = unpack(">II{}s".format(block_length), buffer[PAYLOAD_OFFSET:PAYLOAD_OFFSET+message_length-1])
             return Piece(block_length, piece_index, block_offset, block), buffer[rest_offset:]
         # CANCEL
         elif message_id == 8 and message_length == 13:
@@ -121,7 +112,7 @@ class Message:
             return Cancel(piece_index, block_offset, block_length), buffer[rest_offset:]
         # PORT
         elif message_id == 9 and message_length == 5:
-            listen_port = unpack(">I", buffer[PAYLOAD_OFFSET:PAYLOAD_OFFSET+message_length-1])
+            listen_port, = unpack(">I", buffer[PAYLOAD_OFFSET:PAYLOAD_OFFSET+message_length-1])
             return Port(listen_port), buffer[rest_offset:]
 
         raise ValueError("Invalid message")
@@ -171,11 +162,11 @@ class Have(Message):
         - length = 5 (4 bytes)
         - message id = 4 (1 byte)
         - piece index = zero based index of the piece (4 bytes)"""
-    def __init__(self, piece_index):
+    def __init__(self, piece_index: int):
         super(Have, self).__init__(5, 4)
         self.piece_index = piece_index
 
-    def to_bytes(self):
+    def to_bytes(self) -> bytes:
         return pack(">IBI",
                     self.length,
                     self.message_id,
@@ -187,12 +178,12 @@ class BitField(Message):
         - length = 1 + bitfield_size (5 bytes)
         - message id = 5 (1 byte)
         - bitfield = bitfield representing downloaded pieces (bitfield_size bytes)"""
-    def __init__(self, bitfield, bitfield_size):
+    def __init__(self, bitfield: bytes, bitfield_size: int):
         super(BitField, self).__init__(1 + bitfield_size, 5)
         self.bitfield_size = bitfield_size
         self.bitfield = bitfield
 
-    def to_bytes(self):
+    def to_bytes(self) -> bytes:
         return pack(">IB{}s".format(self.bitfield_size),
                     self.length,
                     self.message_id,
@@ -206,13 +197,13 @@ class Request(Message):
         - piece index = zero based piece index (4 bytes)
         - block offset = zero based of the requested block (4 bytes)
         - block length = length of the requested block (4 bytes)"""
-    def __init__(self, piece_index, block_offset, block_length):
+    def __init__(self, piece_index: int, block_offset: int, block_length: int):
         super(Request, self).__init__(13, 6)
         self.piece_index = piece_index
         self.block_offset = block_offset
         self.block_length = block_length
 
-    def to_bytes(self):
+    def to_bytes(self) -> bytes:
         return pack(">IBIII",
                     self.length,
                     self.message_id,
@@ -228,14 +219,14 @@ class Piece(Message):
         - piece index =  zero based piece index (4 bytes)
         - block offset = zero based of the requested block (4 bytes)
         - block = block as a bytestring or bytearray (block_length bytes)"""
-    def __init__(self, block_length, piece_index, block_offset, block):
+    def __init__(self, block_length: int, piece_index: int, block_offset: int, block: bytes):
         super(Piece, self).__init__(9+block_length, 7)
         self.block_length = block_length
         self.piece_index = piece_index
         self.block_offset = block_offset
         self.block = block
 
-    def to_bytes(self):
+    def to_bytes(self) -> bytes:
         return pack(">IBII{}s".format(self.block_length),
                     self.length,
                     self.message_id,
@@ -251,13 +242,13 @@ class Cancel(Message):
         - piece index = zero based piece index (4 bytes)
         - block offset = zero based of the requested block (4 bytes)
         - block length = length of the requested block (4 bytes)"""
-    def __init__(self, piece_index, block_offset, block_length):
+    def __init__(self, piece_index: int, block_offset: int, block_length: int):
         super(Cancel, self).__init__(13, 8)
         self.piece_index = piece_index
         self.block_offset = block_offset
         self.block_length = block_length
 
-    def to_bytes(self):
+    def to_bytes(self) -> bytes:
         return pack(">IBIII",
                     self.length,
                     self.message_id,
@@ -271,11 +262,11 @@ class Port(Message):
         - length = 5 (4 bytes)
         - message id = 9 (1 byte)
         - port number = listen_port (4 bytes)"""
-    def __init__(self, listen_port):
+    def __init__(self, listen_port: int):
         super(Port, self).__init__(5, 9)
         self.listen_port = listen_port
 
-    def to_bytes(self):
+    def to_bytes(self) -> bytes:
         return pack(">IBI",
                     self.length,
                     self.message_id,

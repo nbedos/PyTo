@@ -1,10 +1,11 @@
 from struct import pack, unpack
-
+from typing import Union
 
 class Message:
-    def __init__(self, length: int, message_id: int):
+    def __init__(self, length: int, message_id: Union[int, None]=None):
         self.length = length
-        self.message_id = message_id
+        if message_id is not None:
+            self.message_id = message_id
 
     #TODO: Check this - https://stackoverflow.com/questions/390250/elegant-ways-to-support-equivalence-equality-in-python-classes
     def __eq__(self, other):
@@ -25,10 +26,10 @@ class Message:
         return "{0}: {1}".format(self.__class__, sorted(self.__dict__.items()))
 
     def to_bytes(self) -> bytes:
-        if self.message_id is None:
-            return pack(">I", self.length)
-        else:
+        try:
             return pack(">IB", self.length, self.message_id)
+        except AttributeError:
+            return pack(">I", self.length)
 
     @classmethod
     def from_bytes(cls, buffer: bytes):
@@ -47,21 +48,22 @@ class Message:
         if message_length == 0:
             return KeepAlive(), buffer[LENGTH_SIZE:]
 
+        total_message_length = LENGTH_SIZE + message_length
         # Second, check if we've got the full message in the buffer
-        if buffer_length < LENGTH_SIZE + message_length:
+        if buffer_length < total_message_length:
             return None, buffer
 
         # At this point message_length is at least 1 so we can read the message_id from the buffer
         message_id, = unpack(">B", buffer[LENGTH_SIZE:LENGTH_SIZE+1])
-        PAYLOAD_OFFSET = LENGTH_SIZE+1
-        rest_offset = LENGTH_SIZE + message_length
-        # CHOKE
 
-        """from_bytes_funcs = {
+        message_buffer, rest = buffer[:total_message_length], buffer[total_message_length:]
+
+        # Map message ids to Message decoding methods
+        decoding_functions = {
             0: Choke.from_bytes,
             1: Unchoke.from_bytes,
             2: Interested.from_bytes,
-            3: NotInterested.from_byte,
+            3: NotInterested.from_bytes,
             4: Have.from_bytes,
             5: BitField.from_bytes,
             6: Request.from_bytes,
@@ -71,58 +73,18 @@ class Message:
         }
         
         try:
-            return from_bytes_funcs[message_length]
+            return decoding_functions[message_id](message_buffer), rest
         except KeyError:
             pass
         
-        raise ValueError("Invalid message id")"""
-
-        if message_id == 0 and message_length == 1:
-            return Choke(), buffer[rest_offset:]
-        # UNCHOKE
-        elif message_id == 1 and message_length == 1:
-            return Unchoke(), buffer[rest_offset:]
-        # INTERESTED
-        elif message_id == 2 and message_length == 1:
-            return Interested(), buffer[rest_offset:]
-        # NOT INTERESTED
-        elif message_id == 3 and message_length == 1:
-            return NotInterested(), buffer[rest_offset:]
-        # HAVE
-        elif message_id == 4 and message_length == 5:
-            piece_index, = unpack(">I", buffer[PAYLOAD_OFFSET:PAYLOAD_OFFSET+4])
-            return Have(piece_index), buffer[rest_offset:]
-        # BITFIELD
-        elif message_id == 5:
-            bitfield_size = message_length-1
-            bitfield = buffer[PAYLOAD_OFFSET:PAYLOAD_OFFSET+bitfield_size]
-            return BitField(bitfield, bitfield_size), buffer[rest_offset:]
-        # REQUEST
-        elif message_id == 6 and message_length == 13:
-            piece_index, block_offset, block_length = unpack(">III", buffer[PAYLOAD_OFFSET:PAYLOAD_OFFSET+message_length-1])
-            return Request(piece_index, block_offset, block_length), buffer[rest_offset:]
-        # PIECE
-        elif message_id == 7 and message_length > 9:
-            block_length = message_length - 9
-            piece_index, block_offset, block = unpack(">II{}s".format(block_length), buffer[PAYLOAD_OFFSET:PAYLOAD_OFFSET+message_length-1])
-            return Piece(block_length, piece_index, block_offset, block), buffer[rest_offset:]
-        # CANCEL
-        elif message_id == 8 and message_length == 13:
-            piece_index, block_offset, block_length = unpack(">III", buffer[PAYLOAD_OFFSET:PAYLOAD_OFFSET+message_length-1])
-            return Cancel(piece_index, block_offset, block_length), buffer[rest_offset:]
-        # PORT
-        elif message_id == 9 and message_length == 5:
-            listen_port, = unpack(">I", buffer[PAYLOAD_OFFSET:PAYLOAD_OFFSET+message_length-1])
-            return Port(listen_port), buffer[rest_offset:]
-
-        raise ValueError("Invalid message")
+        raise ValueError("Invalid binary format for Message")
 
 
 class KeepAlive(Message):
     """KEEP_ALIVE = <length>
         - length = 0 (4 bytes)"""
     def __init__(self):
-        super(KeepAlive, self).__init__(0, None)
+        super(KeepAlive, self).__init__(0)
 
 
 class Choke(Message):
@@ -132,6 +94,13 @@ class Choke(Message):
     def __init__(self):
         super(Choke, self).__init__(1, 0)
 
+    @classmethod
+    def from_bytes(cls, buffer: bytes):
+        length, message_id = unpack(">IB", buffer)
+        if message_id == 0 and length == 1:
+            return cls()
+        raise ValueError("Invalid binary format for Choke message")
+
 
 class Unchoke(Message):
     """UNCHOKE = <length><message id>
@@ -139,6 +108,13 @@ class Unchoke(Message):
         - message id = 1 (1 byte)"""
     def __init__(self):
         super(Unchoke, self).__init__(1, 1)
+
+    @classmethod
+    def from_bytes(cls, buffer: bytes):
+        length, message_id = unpack(">IB", buffer)
+        if message_id == 1 and length == 1:
+            return cls()
+        raise ValueError("Invalid binary format for UnChoke message")
 
 
 class Interested(Message):
@@ -148,6 +124,13 @@ class Interested(Message):
     def __init__(self):
         super(Interested, self).__init__(1, 2)
 
+    @classmethod
+    def from_bytes(cls, buffer: bytes):
+        length, message_id = unpack(">IB", buffer)
+        if message_id == 2 and length == 1:
+            return cls()
+        raise ValueError("Invalid binary format for Interested message")
+
 
 class NotInterested(Message):
     """NOT INTERESTED = <length><message id>
@@ -155,6 +138,13 @@ class NotInterested(Message):
         - message id = 3 (1 byte)"""
     def __init__(self):
         super(NotInterested, self).__init__(1, 3)
+
+    @classmethod
+    def from_bytes(cls, buffer: bytes):
+        length, message_id = unpack(">IB", buffer)
+        if message_id == 3 and length == 1:
+            return cls()
+        raise ValueError("Invalid binary format for NotInterested message")
 
 
 class Have(Message):
@@ -171,6 +161,12 @@ class Have(Message):
                     self.length,
                     self.message_id,
                     self.piece_index)
+    @classmethod
+    def from_bytes(cls, buffer: bytes):
+        length, message_id, piece_index = unpack(">IBI", buffer)
+        if message_id == 4 and length == 5:
+            return cls(piece_index)
+        raise ValueError("Invalid binary format for Have message")
 
 
 class BitField(Message):
@@ -188,6 +184,15 @@ class BitField(Message):
                     self.length,
                     self.message_id,
                     self.bitfield)
+
+    @classmethod
+    def from_bytes(cls, buffer: bytes):
+        length, = unpack(">I", buffer[0:4])
+        if length > 1:
+            message_id, bitfield, = unpack(">B{}s".format(length-1), buffer[4:])
+            if message_id == 5:
+                return BitField(bitfield, length-1)
+        raise ValueError("Invalid binary format for Bitfield message")
 
 
 class Request(Message):
@@ -210,6 +215,13 @@ class Request(Message):
                     self.piece_index,
                     self.block_offset,
                     self.block_length)
+
+    @classmethod
+    def from_bytes(cls, buffer: bytes):
+        length, message_id, piece_index, block_offset, block_length = unpack(">IBIII", buffer)
+        if message_id == 6 and length == 13:
+            return Request(piece_index, block_offset, block_length)
+        raise ValueError("Invalid binary format for Request message")
 
 
 class Piece(Message):
@@ -234,6 +246,17 @@ class Piece(Message):
                     self.block_offset,
                     self.block)
 
+    @classmethod
+    def from_bytes(cls, buffer: bytes):
+        length, = unpack(">I", buffer[0:4])
+        if length > 9:
+            block_length = length - 9
+            message_id, piece_index, block_offset, block = unpack(">BII{}s".format(block_length),
+                                                                  buffer[4:])
+            if message_id == 7:
+                return Piece(block_length, piece_index, block_offset, block)
+        raise ValueError("Invalid binary format for Piece message")
+
 
 class Cancel(Message):
     """CANCEL = <length><message id><piece index><block offset><block length>
@@ -256,6 +279,13 @@ class Cancel(Message):
                     self.block_offset,
                     self.block_length)
 
+    @classmethod
+    def from_bytes(cls, buffer: bytes):
+        length, message_id, piece_index, block_offset, block_length = unpack(">IBIII", buffer)
+        if message_id == 8 and length == 13:
+            return Cancel(piece_index, block_offset, block_length)
+        raise ValueError("Invalid binary format for Cancel message")
+
 
 class Port(Message):
     """PORT = <length><message id><port number>
@@ -271,6 +301,13 @@ class Port(Message):
                     self.length,
                     self.message_id,
                     self.listen_port)
+
+    @classmethod
+    def from_bytes(cls, buffer: bytes):
+        length, message_id, listen_port = unpack(">IBI", buffer)
+        if message_id == 9 and length == 5:
+            return Port(listen_port)
+        raise ValueError("Invalid binary format for Port message")
 
 
 if __name__ == "__main__":

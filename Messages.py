@@ -86,7 +86,7 @@ class HandShake(Message):
         - pstr = string identifier of the protocol: "BitTorrent protocol" (13 bytes)
         - reserved = 8 reserved bytes indicating extensions to the protocol (8 bytes)
         - info_hash = hash of the value of the 'info' key of the torrent file (20 bytes)
-        - peer_id = unique identifier of the peer (20 bytes)
+        - peer_id = unique identifier of the Peer (20 bytes)
 
     Total length of the message = 1 + len(pstr) + 8 + 20 + 20 = 49 + len(pstr)"""
     def __init__(self,

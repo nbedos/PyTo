@@ -109,46 +109,64 @@ class Torrent:
                 raise ValueError("Invalid Have message")
 
 
-async def tcp_handshake(peer: Peer, loop, torrent: Torrent):
+async def connect(peer: Peer, loop: asyncio.AbstractEventLoop, torrent: Torrent):
+    # TODO: blacklist the peer if connection fails
     header = "[%r:%d] " % (peer.ip, peer.port)
     buffer_size = 4096
     logging.debug(header + "Connecting...")
 
+    # Initiate TCP connection
     try:
         reader, writer = await asyncio.open_connection(peer.ip, peer.port, loop=loop)
-        logging.debug(header + "Connected!")
-
-        message = HandShake(t.info_hash).to_bytes()
-        logging.debug(header + "Send: " + str(message))
-        writer.write(message)
-
-        data = await reader.read(buffer_size)
-
     except (ConnectionRefusedError,
             ConnectionAbortedError,
             ConnectionError,
             ConnectionResetError,
             TimeoutError,
             OSError) as e:
-        print("[{}:{}] Exception: {}".format(peer.ip, peer.port, e))
+        logging.debug(header + "Exception: {}".format(peer.ip, peer.port, e))
         return
+    logging.debug(header + "Connected!")
 
+    # HANDSHAKE
+    message = HandShake(t.info_hash).to_bytes()
+    logging.debug(header + "Send: " + str(message))
     try:
-        HandShake.from_bytes(data[0:68])
-        buffer = data[68:]
-
-    except ValueError:
-        logging.debug(header + "Handshake failed")
-        writer.close()
-        logging.debug(header + "Closed socket")
+        writer.write(message)
+        message = None
+        buffer = b""
+        while message is None:
+            buffer += await reader.read(buffer_size)
+            if reader.at_eof():
+                writer.close()
+                return
+            try:
+                message, buffer = Message.from_bytes(buffer)
+            except ValueError("Handshake failed"):
+                writer.close()
+                logging.debug(header + " handshake failed")
+                return
+    # TODO: Check exceptions that can be raised by read() and write()
+    except (ConnectionRefusedError,
+            ConnectionAbortedError,
+            ConnectionError,
+            ConnectionResetError,
+            TimeoutError,
+            OSError) as e:
+        logging.debug(header + "Exception: {}".format(peer.ip, peer.port, e))
         return
 
+    # MESSAGE EXCHANGE
     while True:
-        message, buffer = Message.from_bytes(buffer)
+        try:
+            message, buffer = Message.from_bytes(buffer)
+        except ValueError:
+            logging.debug(header + "Message decoding failed (" + str(message) + ")")
+            return
+
         if message is not None:
             logging.debug(header + "Received: " + str(message))
             torrent.handle_message(message, peer)
-
         try:
             data = await reader.read(buffer_size)
             if reader.at_eof():
@@ -159,7 +177,7 @@ async def tcp_handshake(peer: Peer, loop, torrent: Torrent):
                 ConnectionResetError,
                 TimeoutError,
                 OSError) as e:
-            print("[{}:{}] Exception: {}".format(peer.ip, peer.port, e))
+            logging.debug(header + "Exception: {}".format(peer.ip, peer.port, e))
             break
 
         buffer = buffer + data
@@ -177,7 +195,7 @@ if __name__ == '__main__':
     logging.debug(t.peers)
 
     loop = asyncio.get_event_loop()
-    coroutines = map(lambda p: tcp_handshake(p, loop, t), t.peers)
+    coroutines = map(lambda p: connect(p, loop, t), t.peers)
     loop.run_until_complete(asyncio.gather(*coroutines))
 
     loop.close()

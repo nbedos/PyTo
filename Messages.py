@@ -1,10 +1,11 @@
 """Classes representing messages defined by the Peer Wire Protocol
 
-Each message type has its own subclass and its own methods for conversion to and from
+Each message type has its own subclass and its own methods for converting to and from
 bytestrings.
 
 Specification: https://wiki.theory.org/index.php/BitTorrentSpecification#Peer_wire_protocol_.28TCP.29
 """
+# TODO: Implement @properties for checking attributes in constructors
 
 from struct import pack, unpack, error as struct_error
 from typing import Union
@@ -42,14 +43,22 @@ class Message:
     @classmethod
     def from_bytes(cls, buffer: bytes):
         """Read a bytestring and return a tuple containing the corresponding Subclass instance
-        (except HandShake) along with the rest of the bytestring.
+        along with the rest of the bytestring.
 
         If the string stored in the buffer is incomplete, (None, buffer) is returned.
         If the string can't be translated to a valid Message, ValueError is raised."""
-
-        # First, attempt reading the "length" prefix of the message which is LENGTH_SIZE bytes long
-        LENGTH_SIZE = 4
         buffer_length = len(buffer)
+        # Special case for HandShakes since they don't share the format of other messages
+        if buffer_length >= 5:
+            message_id, = unpack(">B", buffer[4:5])
+            # The fifth byte of the handshake message is the fourth byte of the string identifier
+            # of the protocol "BitTorrent protocol" so it's the character 'T' which value is 84
+            if message_id == 84:
+                return HandShake.from_bytes(buffer)
+
+        # The message is not a HandShake so it starts with a LENGTH_SIZE bytes long integer
+        # representing the message length
+        LENGTH_SIZE = 4
         if LENGTH_SIZE > buffer_length:
             return None, buffer
         message_length, = unpack(">I", buffer[0:LENGTH_SIZE])
@@ -57,7 +66,7 @@ class Message:
             return KeepAlive(), buffer[LENGTH_SIZE:]
 
         total_message_length = LENGTH_SIZE + message_length
-        # Second, check if we've got the full message in the buffer
+        # Abort decoding if the whole message is not in the buffer
         if buffer_length < total_message_length:
             return None, buffer
 
@@ -97,37 +106,52 @@ class HandShake(Message):
         - peer_id = unique identifier of the Peer (20 bytes)
 
     Total length of the message = 1 + len(pstr) + 8 + 20 + 20 = 49 + len(pstr)"""
+
     def __init__(self,
                  info_hash: bytes,
-                 pstr: bytes=b"BitTorrent protocol",
-                 reserved: bytes=b"\x00"*8,
-                 peer_id: bytes=b"-PY0001-000000000000"):
-        super(HandShake, self).__init__(49+len(pstr))
+                 pstr: bytes = b"BitTorrent protocol",
+                 reserved: bytes = b"\x00" * 8,
+                 peer_id: bytes = b"-PY0001-000000000000"):
+        self.length = 49 + len(pstr)
         self.pstr = pstr
         self.reserved = reserved
         self.info_hash = info_hash
         self.peer_id = peer_id
 
     def to_bytes(self):
+        """Return the bytestring representation of the HandShake message"""
         try:
-            return pack(">B{}s8s20s20s".format(len(self.pstr)), len(self.pstr), self.pstr,
-                    self.reserved,
-                    self.info_hash,
-                    self.peer_id)
+            return pack(">B{}s8s20s20s".format(len(self.pstr)),
+                        len(self.pstr),
+                        self.pstr,
+                        self.reserved,
+                        self.info_hash,
+                        self.peer_id)
         except struct_error:
             pass
         raise ValueError("Invalid values for encoding the HandShake instance")
 
     @classmethod
-    def from_bytes(self, buffer: bytes):
+    def from_bytes(cls, buffer: bytes):
+        """Read a bytestring and return a tuple containing the HandShake instance
+        along with the rest of the bytestring."""
         try:
-            pstrlen, = unpack(">B", buffer[0:1])
-            pstr, reserved, info_hash, peer_id = unpack(">x{}s8s20s20s".format(pstrlen), buffer)
-            return HandShake(info_hash, pstr, reserved, peer_id)
+            buffer_length = len(buffer)
+            if buffer_length > 1:
+                pstrlen, = unpack(">B", buffer[0:1])
+            else:
+                return None, buffer
+
+            length = 49 + pstrlen
+            if buffer_length >= length:
+                pstr, reserved, info_hash, peer_id = unpack(">x{}s8s20s20s".format(pstrlen),
+                                                            buffer[:length])
+                return HandShake(info_hash, pstr, reserved, peer_id), buffer[length:]
+            else:
+                return None, buffer
         except struct_error:
             pass
         raise ValueError("Invalid binary format for HandShake message")
-
 
 
 class KeepAlive(Message):
@@ -340,8 +364,8 @@ class Piece(Message):
             length, = unpack(">I", buffer[0:4])
             if length > 9:
                 block_length = length - 9
-                message_id, piece_index, block_offset, block = unpack(">4xBII{}s".format(block_length),
-                                                                      buffer)
+                message_id, piece_index, block_offset, block = \
+                    unpack(">4xBII{}s".format(block_length), buffer)
                 if message_id == 7:
                     return Piece(block_length, piece_index, block_offset, block)
         except struct_error:

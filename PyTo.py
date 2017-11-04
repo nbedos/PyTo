@@ -124,7 +124,7 @@ async def connect(peer: Peer, loop: asyncio.AbstractEventLoop, torrent: Torrent)
             ConnectionResetError,
             TimeoutError,
             OSError) as e:
-        logging.debug(header + "Exception: {}".format(peer.ip, peer.port, e))
+        logging.debug("{} Exception: {}".format(header, e))
         return
     logging.debug(header + "Connected!")
 
@@ -153,7 +153,7 @@ async def connect(peer: Peer, loop: asyncio.AbstractEventLoop, torrent: Torrent)
             ConnectionResetError,
             TimeoutError,
             OSError) as e:
-        logging.debug(header + "Exception: {}".format(peer.ip, peer.port, e))
+        logging.debug("{} Exception: {}".format(header, e))
         return
 
     # MESSAGE EXCHANGE
@@ -177,7 +177,7 @@ async def connect(peer: Peer, loop: asyncio.AbstractEventLoop, torrent: Torrent)
                 ConnectionResetError,
                 TimeoutError,
                 OSError) as e:
-            logging.debug(header + "Exception: {}".format(peer.ip, peer.port, e))
+            logging.debug("{} Exception: {}".format(header, e))
             break
 
         buffer = buffer + data
@@ -189,7 +189,7 @@ async def connect(peer: Peer, loop: asyncio.AbstractEventLoop, torrent: Torrent)
 if __name__ == '__main__':
     logging.basicConfig(format='%(asctime)s %(message)s', level=logging.DEBUG)
 
-    t = Torrent("./data/Torrent files/archlinux-2017.10.01-x86_64.iso.Torrent")
+    t = Torrent("./data/Torrent files/archlinux-2017.11.01-x86_64.iso.Torrent")
     logging.debug(t)
     t.tracker_get()
     logging.debug(t.peers)

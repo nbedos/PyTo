@@ -7,19 +7,13 @@ Specification: https://wiki.theory.org/index.php/BitTorrentSpecification#Peer_wi
 """
 # TODO: Implement @properties for checking attributes in constructors
 
-from struct import pack, unpack, error as struct_error
-from typing import Union
+from struct import calcsize, pack, unpack, error as struct_error
 
 
-class Message:
-    """Represent a generic message as defined by the Peer Wire Protocol.
-
-    This class is mainly used to implement methods and attributes common to all messages.
-    """
-    def __init__(self, length: int, message_id: Union[int, None]=None):
+class Message(object):
+    """Represent a generic message as defined by the Peer Wire Protocol."""
+    def __init__(self, length: int):
         self.length = length
-        if message_id is not None:
-            self.message_id = message_id
 
     def __eq__(self, other):
         if isinstance(other, self.__class__):
@@ -36,7 +30,7 @@ class Message:
 
     def to_bytes(self) -> bytes:
         try:
-            return pack(">IB", self.length, self.message_id)
+            return pack(">IB", self.length, type(self).message_id)
         except AttributeError:
             return pack(">I", self.length)
 
@@ -47,17 +41,9 @@ class Message:
 
         If the string stored in the buffer is incomplete, (None, buffer) is returned.
         If the string can't be translated to a valid Message, ValueError is raised."""
-        buffer_length = len(buffer)
-        # Special case for HandShakes since they don't share the format of other messages
-        if buffer_length >= 5:
-            message_id, = unpack(">B", buffer[4:5])
-            # The fifth byte of the handshake message is the fourth byte of the string identifier
-            # of the protocol "BitTorrent protocol" so it's the character 'T' which value is 84
-            if message_id == 84:
-                return HandShake.from_bytes(buffer)
 
-        # The message is not a HandShake so it starts with a LENGTH_SIZE bytes long integer
-        # representing the message length
+        # First step: extract the length prefix of the message
+        buffer_length = len(buffer)
         LENGTH_SIZE = 4
         if LENGTH_SIZE > buffer_length:
             return None, buffer
@@ -65,32 +51,20 @@ class Message:
         if message_length == 0:
             return KeepAlive(), buffer[LENGTH_SIZE:]
 
-        total_message_length = LENGTH_SIZE + message_length
-        # Abort decoding if the whole message is not in the buffer
-        if buffer_length < total_message_length:
+        # Second step: extract the message id
+        if buffer[LENGTH_SIZE:LENGTH_SIZE+1]:
+            message_id, = unpack(">B", buffer[LENGTH_SIZE:LENGTH_SIZE+1])
+        else:
             return None, buffer
 
-        # At this point message_length is at least 1 so we can read the message_id from the buffer
-        message_id, = unpack(">B", buffer[LENGTH_SIZE:LENGTH_SIZE+1])
-
-        message_buffer, rest = buffer[:total_message_length], buffer[total_message_length:]
-
-        # Map message ids to Message decoding methods
-        decoding_functions = {
-            0: Choke.from_bytes,
-            1: Unchoke.from_bytes,
-            2: Interested.from_bytes,
-            3: NotInterested.from_bytes,
-            4: Have.from_bytes,
-            5: BitField.from_bytes,
-            6: Request.from_bytes,
-            7: Piece.from_bytes,
-            8: Cancel.from_bytes,
-            9: Port.from_bytes
-        }
-        
+        # TODO: extract only the paylod
+        # Third step: invoke the decoding function of the subclass corresponding to the message id
+        decoding_functions = {cls.message_id: cls._payload_from_bytes for cls in
+                              Message.__subclasses__() if
+                              hasattr(cls, "message_id")}
         try:
-            return decoding_functions[message_id](message_buffer), rest
+            m = decoding_functions[message_id](buffer)
+            return m, buffer[m.length:]
         except KeyError:
             pass
         
@@ -107,12 +81,19 @@ class HandShake(Message):
 
     Total length of the message = 1 + len(pstr) + 8 + 20 + 20 = 49 + len(pstr)"""
 
+    # All messages of the Peer Wire Protocol except the HandShake have the format
+    # <length><message id><payload>. By applying this format to the HandShake message we get a
+    # message id equal to the character 'T' (fourth byte of the string identifier of the protocol
+    # "BitTorrent protocol") which value is 84. This is sufficient to identify the HandShake
+    # message.
+    message_id = 84
+
     def __init__(self,
                  info_hash: bytes,
                  pstr: bytes = b"BitTorrent protocol",
                  reserved: bytes = b"\x00" * 8,
                  peer_id: bytes = b"-PY0001-000000000000"):
-        self.length = 49 + len(pstr)
+        super(HandShake, self).__init__(49 + len(pstr))
         self.pstr = pstr
         self.reserved = reserved
         self.info_hash = info_hash
@@ -132,23 +113,15 @@ class HandShake(Message):
         raise ValueError("Invalid values for encoding the HandShake instance")
 
     @classmethod
-    def from_bytes(cls, buffer: bytes):
+    def _payload_from_bytes(cls, buffer: bytes):
         """Read a bytestring and return a tuple containing the HandShake instance
         along with the rest of the bytestring."""
         try:
-            buffer_length = len(buffer)
-            if buffer_length > 1:
-                pstrlen, = unpack(">B", buffer[0:1])
-            else:
-                return None, buffer
-
+            pstrlen, = unpack(">B", buffer[0:1])
             length = 49 + pstrlen
-            if buffer_length >= length:
-                pstr, reserved, info_hash, peer_id = unpack(">x{}s8s20s20s".format(pstrlen),
-                                                            buffer[:length])
-                return HandShake(info_hash, pstr, reserved, peer_id), buffer[length:]
-            else:
-                return None, buffer
+            pstr, reserved, info_hash, peer_id = unpack(">x{}s8s20s20s".format(pstrlen),
+                                                        buffer[:length])
+            return HandShake(info_hash, pstr, reserved, peer_id)
         except struct_error:
             pass
         raise ValueError("Invalid binary format for HandShake message")
@@ -165,14 +138,16 @@ class Choke(Message):
     """CHOKE = <length><message id>
         - length = 1 (4 bytes)
         - message id = 0 (1 byte)"""
+    message_id = 0
+
     def __init__(self):
-        super(Choke, self).__init__(1, 0)
+        super(Choke, self).__init__(1)
 
     @classmethod
-    def from_bytes(cls, buffer: bytes):
+    def _payload_from_bytes(cls, buffer: bytes):
         try:
-            length, message_id = unpack(">IB", buffer)
-            if message_id == 0 and length == 1:
+            length, message_id = unpack(">IB", buffer[:calcsize(">IB")])
+            if message_id == cls.message_id and length == 1:
                 return cls()
         except struct_error:
             pass
@@ -183,14 +158,16 @@ class Unchoke(Message):
     """UNCHOKE = <length><message id>
         - length = 1 (4 bytes)
         - message id = 1 (1 byte)"""
+    message_id = 1
+
     def __init__(self):
-        super(Unchoke, self).__init__(1, 1)
+        super(Unchoke, self).__init__(1)
 
     @classmethod
-    def from_bytes(cls, buffer: bytes):
+    def _payload_from_bytes(cls, buffer: bytes):
         try:
-            length, message_id = unpack(">IB", buffer)
-            if message_id == 1 and length == 1:
+            length, message_id = unpack(">IB", buffer[:calcsize(">IB")])
+            if message_id == Unchoke.message_id and length == 1:
                 return cls()
         except struct_error:
             pass
@@ -201,13 +178,15 @@ class Interested(Message):
     """INTERESTED = <length><message id>
         - length = 1 (4 bytes)
         - message id = 2 (1 byte)"""
+    message_id = 2
+
     def __init__(self):
-        super(Interested, self).__init__(1, 2)
+        super(Interested, self).__init__(1)
 
     @classmethod
-    def from_bytes(cls, buffer: bytes):
+    def _payload_from_bytes(cls, buffer: bytes):
         try:
-            length, message_id = unpack(">IB", buffer)
+            length, message_id = unpack(">IB", buffer[:calcsize(">IB")])
             if message_id == 2 and length == 1:
                 return cls()
         except struct_error:
@@ -219,13 +198,15 @@ class NotInterested(Message):
     """NOT INTERESTED = <length><message id>
         - length = 1 (4 bytes)
         - message id = 3 (1 byte)"""
+    message_id = 3
+
     def __init__(self):
-        super(NotInterested, self).__init__(1, 3)
+        super(NotInterested, self).__init__(1)
 
     @classmethod
-    def from_bytes(cls, buffer: bytes):
+    def _payload_from_bytes(cls, buffer: bytes):
         try:
-            length, message_id = unpack(">IB", buffer)
+            length, message_id = unpack(">IB", buffer[:calcsize(">IB")])
             if message_id == 3 and length == 1:
                 return cls()
         except struct_error:
@@ -238,8 +219,10 @@ class Have(Message):
         - length = 5 (4 bytes)
         - message id = 4 (1 byte)
         - piece index = zero based index of the piece (4 bytes)"""
+    message_id = 4
+
     def __init__(self, piece_index: int):
-        super(Have, self).__init__(5, 4)
+        super(Have, self).__init__(5)
         self.piece_index = piece_index
 
     def to_bytes(self) -> bytes:
@@ -253,9 +236,9 @@ class Have(Message):
         raise ValueError("Invalid values for encoding the Have instance")
 
     @classmethod
-    def from_bytes(cls, buffer: bytes):
+    def _payload_from_bytes(cls, buffer: bytes):
         try:
-            length, message_id, piece_index = unpack(">IBI", buffer)
+            length, message_id, piece_index = unpack(">IBI", buffer[:calcsize(">IBI")])
             if message_id == 4 and length == 5:
                 return cls(piece_index)
         except struct_error:
@@ -268,8 +251,10 @@ class BitField(Message):
         - length = 1 + bitfield_size (5 bytes)
         - message id = 5 (1 byte)
         - bitfield = bitfield representing downloaded pieces (bitfield_size bytes)"""
+    message_id = 5
+
     def __init__(self, bitfield: bytes, bitfield_size: int):
-        super(BitField, self).__init__(1 + bitfield_size, 5)
+        super(BitField, self).__init__(1 + bitfield_size)
         self.bitfield_size = bitfield_size
         self.bitfield = bitfield
 
@@ -284,12 +269,12 @@ class BitField(Message):
         raise ValueError("Invalid values for encoding the BitField instance")
 
     @classmethod
-    def from_bytes(cls, buffer: bytes):
+    def _payload_from_bytes(cls, buffer: bytes):
         try:
             length, = unpack(">I", buffer[0:4])
             if length > 1:
-                message_id, bitfield, = unpack(">4xB{}s".format(length-1), buffer)
-                if message_id == 5:
+                message_id, bitfield, = unpack(">4xB{}s".format(length-1), buffer[:length+4])
+                if message_id == cls.message_id:
                     return BitField(bitfield, length-1)
         except struct_error:
             pass
@@ -303,8 +288,10 @@ class Request(Message):
         - piece index = zero based piece index (4 bytes)
         - block offset = zero based of the requested block (4 bytes)
         - block length = length of the requested block (4 bytes)"""
+    message_id = 6
+
     def __init__(self, piece_index: int, block_offset: int, block_length: int):
-        super(Request, self).__init__(13, 6)
+        super(Request, self).__init__(13)
         self.piece_index = piece_index
         self.block_offset = block_offset
         self.block_length = block_length
@@ -322,10 +309,11 @@ class Request(Message):
         raise ValueError("Invalid values for encoding the Request instance")
 
     @classmethod
-    def from_bytes(cls, buffer: bytes):
+    def _payload_from_bytes(cls, buffer: bytes):
         try:
-            length, message_id, piece_index, block_offset, block_length = unpack(">IBIII", buffer)
-            if message_id == 6 and length == 13:
+            length, message_id, piece_index, block_offset, block_length = unpack(">IBIII",
+                                                                                 buffer[:17])
+            if message_id == cls.message_id and length == 13:
                 return Request(piece_index, block_offset, block_length)
         except struct_error:
             pass
@@ -339,8 +327,10 @@ class Piece(Message):
         - piece index =  zero based piece index (4 bytes)
         - block offset = zero based of the requested block (4 bytes)
         - block = block as a bytestring or bytearray (block_length bytes)"""
+    message_id = 7
+
     def __init__(self, block_length: int, piece_index: int, block_offset: int, block: bytes):
-        super(Piece, self).__init__(9+block_length, 7)
+        super(Piece, self).__init__(9+block_length)
         self.block_length = block_length
         self.piece_index = piece_index
         self.block_offset = block_offset
@@ -359,14 +349,14 @@ class Piece(Message):
         raise ValueError("Invalid values for encoding the Piece instance")
 
     @classmethod
-    def from_bytes(cls, buffer: bytes):
+    def _payload_from_bytes(cls, buffer: bytes):
         try:
             length, = unpack(">I", buffer[0:4])
             if length > 9:
                 block_length = length - 9
                 message_id, piece_index, block_offset, block = \
-                    unpack(">4xBII{}s".format(block_length), buffer)
-                if message_id == 7:
+                    unpack(">4xBII{}s".format(block_length), buffer[:length+4])
+                if message_id == cls.message_id:
                     return Piece(block_length, piece_index, block_offset, block)
         except struct_error:
             pass
@@ -380,8 +370,10 @@ class Cancel(Message):
         - piece index = zero based piece index (4 bytes)
         - block offset = zero based of the requested block (4 bytes)
         - block length = length of the requested block (4 bytes)"""
+    message_id = 8
+
     def __init__(self, piece_index: int, block_offset: int, block_length: int):
-        super(Cancel, self).__init__(13, 8)
+        super(Cancel, self).__init__(13)
         self.piece_index = piece_index
         self.block_offset = block_offset
         self.block_length = block_length
@@ -399,10 +391,11 @@ class Cancel(Message):
         raise ValueError("Invalid values for encoding the Cancel instance")
 
     @classmethod
-    def from_bytes(cls, buffer: bytes):
+    def _payload_from_bytes(cls, buffer: bytes):
         try:
-            length, message_id, piece_index, block_offset, block_length = unpack(">IBIII", buffer)
-            if message_id == 8 and length == 13:
+            length, message_id, piece_index, block_offset, block_length = unpack(">IBIII",
+                                                                                 buffer[:17])
+            if message_id == cls.message_id and length == 13:
                 return Cancel(piece_index, block_offset, block_length)
         except struct_error:
             pass
@@ -414,8 +407,10 @@ class Port(Message):
         - length = 5 (4 bytes)
         - message id = 9 (1 byte)
         - port number = listen_port (4 bytes)"""
+    message_id = 9
+
     def __init__(self, listen_port: int):
-        super(Port, self).__init__(5, 9)
+        super(Port, self).__init__(5)
         self.listen_port = listen_port
 
     def to_bytes(self) -> bytes:
@@ -429,10 +424,10 @@ class Port(Message):
         raise ValueError("Invalid values for encoding the Port instance")
 
     @classmethod
-    def from_bytes(cls, buffer: bytes):
+    def _payload_from_bytes(cls, buffer: bytes):
         try:
-            length, message_id, listen_port = unpack(">IBI", buffer)
-            if message_id == 9 and length == 5:
+            length, message_id, listen_port = unpack(">IBI", buffer[:9])
+            if message_id == cls.message_id and length == 5:
                 return Port(listen_port)
         except struct_error:
             pass

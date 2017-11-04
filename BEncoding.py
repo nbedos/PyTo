@@ -1,8 +1,16 @@
+""" Utility functions for translating Python objects to and from bencoded bytestrings.
+
+Specification: https://wiki.theory.org/index.php/BitTorrentSpecification#Bencoding
+"""
+
+
 def bdecode(s: bytes):
-    """ Decode the Bencoded value stored in the bytestring"""
+    """Decode the bencoded value stored in the bytestring.
+
+    ValueError is raised if the whole string is not a valid bencoded value"""
     if isinstance(s, bytes):
-        b, remainder = _bdecode_partial(s)
-        if len(remainder) == 0:
+        b, remainder = bdecode_partial(s)
+        if not remainder:
             return b
         else:
             raise ValueError("Invalid Bencoded string (part of the string was not consumed)")
@@ -10,16 +18,15 @@ def bdecode(s: bytes):
     raise ValueError("Invalid Bencoded string (must be bytestring)")
 
 
-def _bdecode_partial(s: bytes):
-    """ Return the first Bencoded value read from the bytestring,
+def bdecode_partial(s: bytes):
+    """Return the first Bencoded value read from the bytestring,
     and the remainder of the bytestring.
 
-    Exception: ValueError if the string is invalid"""
+    ValueError is raised if the bytestring does not start with a valid bencoded value."""
     if len(s) < 2:
         raise ValueError("Invalid Bencoded string (minimal length: 2)")
     # Integer :
     #   - "i42e" --> 42
-    #   -
     if s[0:1] == b"i":
         try:
             number, remainder = s[1:].split(b"e", 1)
@@ -35,7 +42,7 @@ def _bdecode_partial(s: bytes):
         # Loop until we've reached the end of the list
         while remainder[0:1] != b"e":
             # Read one Bencoded value from the string
-            b, remainder = _bdecode_partial(remainder)
+            b, remainder = bdecode_partial(remainder)
             l.append(b)
         return l, remainder[1:]
     # Dictionary
@@ -45,13 +52,13 @@ def _bdecode_partial(s: bytes):
         d = {}
         lastkey = None
         while remainder[0:1] != b"e":
-            key, remainder = _bdecode_partial(remainder)
+            key, remainder = bdecode_partial(remainder)
             if (lastkey is not None) and (key <= lastkey):
                 raise ValueError("Invalid Bencoded dictionary (keys must be sorted)")
 
             # Dictionary key must be a string
             if isinstance(key, bytes):
-                value, remainder = _bdecode_partial(remainder)
+                value, remainder = bdecode_partial(remainder)
                 d[key] = value
             else:
                 raise ValueError("Invalid Bencoded dictionary (keys must be strings)")
@@ -70,23 +77,23 @@ def _bdecode_partial(s: bytes):
         raise ValueError("Invalid Bencoded string")
 
 
-def bencode(o):
+def bencode(o) -> bytes:
     """Return the Bencoded representation of the object.
 
     Exception: ValueError is raised if the object is invalid"""
     if isinstance(o, bytes):
         return b"%i:%s" % (len(o), o)
     elif isinstance(o, dict):
-        return b"d%se" % b"".join([_BencodeDictItem(k, v) for k, v in  sorted(o.items())])
+        return b"d%se" % b"".join([_bencodeDictItem(k, v) for k, v in sorted(o.items())])
     elif isinstance(o, list):
         return b"l%se" % b"".join(map(bencode, o))
     elif isinstance(o, int):
         return b"i%ie" % o
-    else:
-        raise ValueError("Invalid object (object must be a bytestring, an integer, a list or a dictionary)")
+
+    raise ValueError("Invalid object (object must be a bytestring, an integer, a list or a dictionary)")
 
 
-def _BencodeDictItem(key: bytes, value):
+def _bencodeDictItem(key: bytes, value):
     if isinstance(key, bytes):
         return bencode(key) + bencode(value)
     raise ValueError("Invalid object (dictionary key must be a bytestring)")

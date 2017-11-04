@@ -1,3 +1,7 @@
+"""
+
+
+"""
 import urllib.request
 import urllib.parse
 from hashlib import sha1
@@ -119,6 +123,7 @@ async def tcp_handshake(peer: Peer, loop, torrent: Torrent):
         writer.write(message)
 
         data = await reader.read(buffer_size)
+
     except (ConnectionRefusedError,
             ConnectionAbortedError,
             ConnectionError,

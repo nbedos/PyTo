@@ -1,13 +1,25 @@
+"""Classes representing messages defined by the Peer Wire Protocol
+
+Each message type has its own subclass and its own methods for conversion to and from
+bytestrings.
+
+Specification: https://wiki.theory.org/index.php/BitTorrentSpecification#Peer_wire_protocol_.28TCP.29
+"""
+
 from struct import pack, unpack, error as struct_error
 from typing import Union
 
+
 class Message:
+    """Represent a generic message as defined by the Peer Wire Protocol.
+
+    This class is mainly used to implement methods and attributes common to all messages.
+    """
     def __init__(self, length: int, message_id: Union[int, None]=None):
         self.length = length
         if message_id is not None:
             self.message_id = message_id
 
-    #TODO: Check this - https://stackoverflow.com/questions/390250/elegant-ways-to-support-equivalence-equality-in-python-classes
     def __eq__(self, other):
         if isinstance(other, self.__class__):
             return self.__dict__ == other.__dict__
@@ -17,10 +29,6 @@ class Message:
         if isinstance(other, self.__class__):
             return not self.__eq__(other)
         return NotImplemented
-
-    #def __hash__(self):
-    #    """Override the default hash behavior (that returns the id or the object)"""
-    #    return hash(tuple(sorted(self.__dict__.items())))
 
     def __repr__(self):
         return "{0}: {1}".format(self.__class__, sorted(self.__dict__.items()))

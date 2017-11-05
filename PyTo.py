@@ -1,6 +1,12 @@
 """
+Main module for PyTo
 
+This is where we define the main classes:
+    Torrent: represents a torrent file
+    Peer: represents a member of the network
 
+Executing this module launches the download of the last Archlinux installation file and is a good
+way to see PyTo working.
 """
 import urllib.request
 import urllib.parse

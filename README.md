@@ -10,6 +10,7 @@ BitTorrent is a protocol for peer to peer file sharing which makes this project 
 
 ### Personal Goals
 My main goal is to learn more about Python 3, be it:
+
  * the language itself and the features that make it unique
  * the standard library
  * designing a software written in an object-oriented style

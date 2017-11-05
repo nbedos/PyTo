@@ -56,7 +56,7 @@ class Peer:
 
     async def read(self, buffer=b""):
         """"Generator returning the Messages sent by the peer"""
-        #logging.debug("[{}:{}] Buffer before: {}".format(self.ip, self.port, str(buffer)))
+        logging.debug("[{}:{}] Buffer before: {}".format(self.ip, self.port, str(buffer)))
         while self.reader:
             try:
                 buffer += await self.reader.read(Peer.buffer_size)
@@ -74,7 +74,7 @@ class Peer:
                 self.close()
                 break
 
-            #logging.debug("[{}:{}] Buffer during: {}".format(self.ip, self.port, str(buffer)))
+            logging.debug("[{}:{}] Buffer during: {}".format(self.ip, self.port, str(buffer)))
             while buffer:
                 try:
                     message, buffer = Message.from_bytes(buffer)
@@ -84,11 +84,11 @@ class Peer:
                         logging.debug("[{}:{}] Message received: {}".format(self.ip,
                                                                             self.port,
                                                                             str(message)))
-                        #logging.debug(
-                        #    "[{}:{}] Buffer after: {}".format(self.ip, self.port, str(buffer)))
+                        logging.debug(
+                            "[{}:{}] Buffer after: {}".format(self.ip, self.port, str(buffer)))
                         yield message
                 except ValueError:
-                    logging.debug("[{}:{}] Received invalid message: {}".format(self.ip,
+                    logging.error("[{}:{}] Received invalid message: {}".format(self.ip,
                                                                                 self.port,
                                                                                 str(buffer)))
                     self.close()

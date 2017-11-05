@@ -27,6 +27,9 @@ class TestMessageFromBytes(TestCase):
                 m, _ = Message.from_bytes(key)
                 self.assertEqual(m, value)
 
+    def test_from_bytes_consecutive(self):
+        pass
+
     def test_from_bytes_failure(self):
         fail_cases = [
             b"\x00\x00\x00\x01\x99"

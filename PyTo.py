@@ -13,6 +13,8 @@ from Messages import *
 
 
 class Peer:
+    buffer_size = 4096
+
     def __init__(self, buffer: bytes, bitfield_size: int):
         ip_1, ip_2, ip_3, ip_4, port = unpack(">4BH", buffer)
         self.ip = "{}.{}.{}.{}".format(ip_1, ip_2, ip_3, ip_4)
@@ -21,12 +23,103 @@ class Peer:
         self.choked = True
         self.interested = False
         self.bitfield = bytearray(b"\x00"*bitfield_size)
+        self.reader = None
+        self.writer = None
 
     def __repr__(self):
         return "Peer({}:{}, choking={}, choked={})".format(self.ip,
                                                            self.port,
                                                            self.choking,
                                                            self.choked)
+
+    async def connect(self, loop):
+        """Initiate the connection with the peer"""
+        logging.debug("[{}:{}] Initiating TCP connection...".format(self.ip, self.port))
+        try:
+            self.reader, self.writer = await asyncio.open_connection(self.ip, self.port, loop=loop)
+            logging.debug("[{}:{}] Connected!".format(self.ip, self.port))
+        except (ConnectionRefusedError,
+                ConnectionAbortedError,
+                ConnectionError,
+                ConnectionResetError,
+                TimeoutError,
+                OSError) as e:
+            logging.debug("[{}:{}] Exception: {}".format(self.ip, self.port, e))
+            self.close()
+            return
+
+    async def read(self, buffer=b""):
+        """"Generator returning the Messages sent by the peer"""
+        #logging.debug("[{}:{}] Buffer before: {}".format(self.ip, self.port, str(buffer)))
+        while self.reader:
+            try:
+                buffer += await self.reader.read(Peer.buffer_size)
+            except (ConnectionRefusedError,
+                    ConnectionAbortedError,
+                    ConnectionError,
+                    ConnectionResetError,
+                    TimeoutError,
+                    OSError) as e:
+                logging.debug("[{}:{}] Exception: {}".format(self.ip, self.port, e))
+                self.close()
+                break
+
+            if self.reader.at_eof():
+                self.close()
+                break
+
+            #logging.debug("[{}:{}] Buffer during: {}".format(self.ip, self.port, str(buffer)))
+            while buffer:
+                try:
+                    message, buffer = Message.from_bytes(buffer)
+                    if message is None:
+                        break
+                    else:
+                        logging.debug("[{}:{}] Message received: {}".format(self.ip,
+                                                                            self.port,
+                                                                            str(message)))
+                        #logging.debug(
+                        #    "[{}:{}] Buffer after: {}".format(self.ip, self.port, str(buffer)))
+                        yield message
+                except ValueError:
+                    logging.debug("[{}:{}] Received invalid message: {}".format(self.ip,
+                                                                                self.port,
+                                                                                str(buffer)))
+                    self.close()
+                    break
+
+    def write(self, message):
+        logging.debug("[{}:{}] write: {}".format(self.ip, self.port, str(message)))
+        # TODO: Check exceptions
+        self.writer.write(message.to_bytes())
+
+    def close(self):
+        logging.debug("[{}:{}] Connection closed".format(self.ip, self.port))
+        if self.writer:
+            self.writer.close()
+        self.writer = None
+        self.reader = None
+
+    async def exchange(self, loop: asyncio.AbstractEventLoop, torrent):
+        await self.connect(loop)
+        if self.reader is None:
+            return
+
+        self.write(HandShake(t.info_hash))
+
+        # TODO: Find the right syntax to read a single value from an asynchronous generator
+        async for message in self.read():
+            if not isinstance(message, HandShake):
+                logging.debug("[{}:{}] HandShake failed (invalid message)".format(self.ip, self.port))
+                if message.info_hash != torrent.info_hash:
+                    logging.debug(("[{}:{}] HandShake failed "
+                                   "(invalid info_hash: {})").format(self.ip,
+                                                                     self.port,
+                                                                     message.info_hash))
+            break
+
+        async for message in self.read():
+            torrent.handle_message(message, self)
 
 
 def _split(l: list, n: int) -> list:
@@ -109,83 +202,6 @@ class Torrent:
                 raise ValueError("Invalid Have message")
 
 
-async def connect(peer: Peer, loop: asyncio.AbstractEventLoop, torrent: Torrent):
-    # TODO: blacklist the peer if connection fails
-    header = "[%r:%d] " % (peer.ip, peer.port)
-    buffer_size = 4096
-    logging.debug(header + "Connecting...")
-
-    # Initiate TCP connection
-    try:
-        reader, writer = await asyncio.open_connection(peer.ip, peer.port, loop=loop)
-    except (ConnectionRefusedError,
-            ConnectionAbortedError,
-            ConnectionError,
-            ConnectionResetError,
-            TimeoutError,
-            OSError) as e:
-        logging.debug("{} Exception: {}".format(header, e))
-        return
-    logging.debug(header + "Connected!")
-
-    # HANDSHAKE
-    message = HandShake(t.info_hash).to_bytes()
-    logging.debug(header + "Send: " + str(message))
-    try:
-        writer.write(message)
-        message = None
-        buffer = b""
-        while message is None:
-            buffer += await reader.read(buffer_size)
-            if reader.at_eof():
-                writer.close()
-                return
-            try:
-                message, buffer = Message.from_bytes(buffer)
-            except ValueError("Handshake failed"):
-                writer.close()
-                logging.debug(header + " handshake failed")
-                return
-    # TODO: Check exceptions that can be raised by read() and write()
-    except (ConnectionRefusedError,
-            ConnectionAbortedError,
-            ConnectionError,
-            ConnectionResetError,
-            TimeoutError,
-            OSError) as e:
-        logging.debug("{} Exception: {}".format(header, e))
-        return
-
-    # MESSAGE EXCHANGE
-    while True:
-        try:
-            message, buffer = Message.from_bytes(buffer)
-        except ValueError:
-            logging.debug(header + "Message decoding failed (" + str(message) + ")")
-            return
-
-        if message is not None:
-            logging.debug(header + "Received: " + str(message))
-            torrent.handle_message(message, peer)
-        try:
-            data = await reader.read(buffer_size)
-            if reader.at_eof():
-                break
-        except (ConnectionRefusedError,
-                ConnectionAbortedError,
-                ConnectionError,
-                ConnectionResetError,
-                TimeoutError,
-                OSError) as e:
-            logging.debug("{} Exception: {}".format(header, e))
-            break
-
-        buffer = buffer + data
-
-    writer.close()
-    logging.debug(header + "Closed socket")
-
-
 if __name__ == '__main__':
     logging.basicConfig(format='%(asctime)s %(message)s', level=logging.DEBUG)
 
@@ -195,7 +211,7 @@ if __name__ == '__main__':
     logging.debug(t.peers)
 
     loop = asyncio.get_event_loop()
-    coroutines = map(lambda p: connect(p, loop, t), t.peers)
+    coroutines = map(lambda p: p.exchange(loop, t), t.peers)
     loop.run_until_complete(asyncio.gather(*coroutines))
 
     loop.close()

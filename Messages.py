@@ -59,12 +59,12 @@ class Message(object):
 
         # TODO: extract only the paylod
         # Third step: invoke the decoding function of the subclass corresponding to the message id
-        decoding_functions = {cls.message_id: cls._payload_from_bytes for cls in
+        decoding_functions = {cls.message_id: cls.from_bytes for cls in
                               Message.__subclasses__() if
                               hasattr(cls, "message_id")}
         try:
             m = decoding_functions[message_id](buffer)
-            return m, buffer[m.length:]
+            return m, buffer[m.length+4:]
         except KeyError:
             pass
         
@@ -113,7 +113,7 @@ class HandShake(Message):
         raise ValueError("Invalid values for encoding the HandShake instance")
 
     @classmethod
-    def _payload_from_bytes(cls, buffer: bytes):
+    def from_bytes(cls, buffer: bytes):
         """Read a bytestring and return a tuple containing the HandShake instance
         along with the rest of the bytestring."""
         try:
@@ -144,7 +144,7 @@ class Choke(Message):
         super(Choke, self).__init__(1)
 
     @classmethod
-    def _payload_from_bytes(cls, buffer: bytes):
+    def from_bytes(cls, buffer: bytes):
         try:
             length, message_id = unpack(">IB", buffer[:calcsize(">IB")])
             if message_id == cls.message_id and length == 1:
@@ -164,7 +164,7 @@ class Unchoke(Message):
         super(Unchoke, self).__init__(1)
 
     @classmethod
-    def _payload_from_bytes(cls, buffer: bytes):
+    def from_bytes(cls, buffer: bytes):
         try:
             length, message_id = unpack(">IB", buffer[:calcsize(">IB")])
             if message_id == Unchoke.message_id and length == 1:
@@ -184,7 +184,7 @@ class Interested(Message):
         super(Interested, self).__init__(1)
 
     @classmethod
-    def _payload_from_bytes(cls, buffer: bytes):
+    def from_bytes(cls, buffer: bytes):
         try:
             length, message_id = unpack(">IB", buffer[:calcsize(">IB")])
             if message_id == 2 and length == 1:
@@ -204,7 +204,7 @@ class NotInterested(Message):
         super(NotInterested, self).__init__(1)
 
     @classmethod
-    def _payload_from_bytes(cls, buffer: bytes):
+    def from_bytes(cls, buffer: bytes):
         try:
             length, message_id = unpack(">IB", buffer[:calcsize(">IB")])
             if message_id == 3 and length == 1:
@@ -236,7 +236,7 @@ class Have(Message):
         raise ValueError("Invalid values for encoding the Have instance")
 
     @classmethod
-    def _payload_from_bytes(cls, buffer: bytes):
+    def from_bytes(cls, buffer: bytes):
         try:
             length, message_id, piece_index = unpack(">IBI", buffer[:calcsize(">IBI")])
             if message_id == 4 and length == 5:
@@ -248,7 +248,7 @@ class Have(Message):
 
 class BitField(Message):
     """BITFIELD = <length><message id><bitfield>
-        - length = 1 + bitfield_size (5 bytes)
+        - length = 1 + bitfield_size (4 bytes)
         - message id = 5 (1 byte)
         - bitfield = bitfield representing downloaded pieces (bitfield_size bytes)"""
     message_id = 5
@@ -269,7 +269,7 @@ class BitField(Message):
         raise ValueError("Invalid values for encoding the BitField instance")
 
     @classmethod
-    def _payload_from_bytes(cls, buffer: bytes):
+    def from_bytes(cls, buffer: bytes):
         try:
             length, = unpack(">I", buffer[0:4])
             if length > 1:
@@ -309,7 +309,7 @@ class Request(Message):
         raise ValueError("Invalid values for encoding the Request instance")
 
     @classmethod
-    def _payload_from_bytes(cls, buffer: bytes):
+    def from_bytes(cls, buffer: bytes):
         try:
             length, message_id, piece_index, block_offset, block_length = unpack(">IBIII",
                                                                                  buffer[:17])
@@ -349,7 +349,7 @@ class Piece(Message):
         raise ValueError("Invalid values for encoding the Piece instance")
 
     @classmethod
-    def _payload_from_bytes(cls, buffer: bytes):
+    def from_bytes(cls, buffer: bytes):
         try:
             length, = unpack(">I", buffer[0:4])
             if length > 9:
@@ -391,7 +391,7 @@ class Cancel(Message):
         raise ValueError("Invalid values for encoding the Cancel instance")
 
     @classmethod
-    def _payload_from_bytes(cls, buffer: bytes):
+    def from_bytes(cls, buffer: bytes):
         try:
             length, message_id, piece_index, block_offset, block_length = unpack(">IBIII",
                                                                                  buffer[:17])
@@ -424,7 +424,7 @@ class Port(Message):
         raise ValueError("Invalid values for encoding the Port instance")
 
     @classmethod
-    def _payload_from_bytes(cls, buffer: bytes):
+    def from_bytes(cls, buffer: bytes):
         try:
             length, message_id, listen_port = unpack(">IBI", buffer[:9])
             if message_id == cls.message_id and length == 5:

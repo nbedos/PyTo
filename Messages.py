@@ -40,8 +40,10 @@ class Message(object):
             return pack(">I", self.length)
 
     @classmethod
-    def from_payload(cls, payload: bytes):
+    def from_payload(cls, payload: bytes, payload_length: int):
         """Generic method for messages with no payload"""
+        assert(not payload and not payload_length)
+
         return cls()
 
     @classmethod
@@ -78,8 +80,10 @@ class Message(object):
         decoding_functions = {cls.message_id: cls.from_payload for cls in
                               Message.__subclasses__() if
                               hasattr(cls, "message_id")}
+
         try:
-            m = decoding_functions[message_id](buffer[LENGTH_SIZE+1:total_length])
+            m = decoding_functions[message_id](buffer[LENGTH_SIZE+1:total_length],
+                                               message_length-1)
             return m, buffer[total_length:]
         except KeyError:
             pass
@@ -216,7 +220,7 @@ class Have(Message):
         raise ValueError("Invalid values for encoding the Have instance")
 
     @classmethod
-    def from_payload(cls, payload: bytes):
+    def from_payload(cls, payload: bytes, payload_length: int):
         try:
             piece_index, = unpack(">I", payload)
             return cls(piece_index)
@@ -248,8 +252,8 @@ class BitField(Message):
         raise ValueError("Invalid values for encoding the BitField instance")
 
     @classmethod
-    def from_payload(cls, payload: bytes):
-        return BitField(payload, len(payload))
+    def from_payload(cls, payload: bytes, payload_length: int):
+        return BitField(payload, payload_length)
 
 
 class Request(Message):
@@ -280,7 +284,7 @@ class Request(Message):
         raise ValueError("Invalid values for encoding the Request instance")
 
     @classmethod
-    def from_payload(cls, payload: bytes):
+    def from_payload(cls, payload: bytes, payload_length: int):
         try:
             piece_index, block_offset, block_length = unpack(">III", payload)
             return Request(piece_index, block_offset, block_length)
@@ -318,8 +322,8 @@ class Piece(Message):
         raise ValueError("Invalid values for encoding the Piece instance")
 
     @classmethod
-    def from_payload(cls, payload: bytes):
-        block_length = len(payload) - 8
+    def from_payload(cls, payload: bytes, payload_length: int):
+        block_length = payload_length - 8
         try:
             piece_index, block_offset, block = unpack(">II{}s".format(block_length),
                                                       payload)
@@ -357,7 +361,7 @@ class Cancel(Message):
         raise ValueError("Invalid values for encoding the Cancel instance")
 
     @classmethod
-    def from_payload(cls, payload: bytes):
+    def from_payload(cls, payload: bytes, payload_length: int):
         try:
             piece_index, block_offset, block_length = unpack(">III", payload)
             return Cancel(piece_index, block_offset, block_length)
@@ -388,7 +392,7 @@ class Port(Message):
         raise ValueError("Invalid values for encoding the Port instance")
 
     @classmethod
-    def from_payload(cls, payload: bytes):
+    def from_payload(cls, payload: bytes, payload_length: int):
         try:
             listen_port, = unpack(">I", payload)
             return Port(listen_port)

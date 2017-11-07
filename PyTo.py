@@ -13,6 +13,8 @@ import urllib.parse
 from hashlib import sha1
 import asyncio
 import logging
+import os
+from struct import pack
 
 from BEncoding import bdecode, bencode
 from Messages import *
@@ -140,6 +142,11 @@ def _split(l: list, n: int) -> list:
     return chunks
 
 
+def _sanitize(filename: list):
+    allowed_characters = {' ', '-', '[', ']', '}', '{', '_', '.'}
+    return "".join([c for c in filename if c.isalnum() or c in allowed_characters]).rstrip()
+
+
 class Torrent:
     def __init__(self, torrent_file):
         # TODO: Check if all necessary keys are in the info dictionary
@@ -148,10 +155,11 @@ class Torrent:
         try:
             self.announce = m[b'announce']
             self.info = m[b'info']
-            self.name = self.info[b'name']
+            self.name = _sanitize(self.info[b'name'].decode("utf-8"))
             self.info_hash = sha1(bencode(self.info)).digest()
 
             self.piece_length = self.info[b"piece length"]
+            self.hashes = _split(self.info[b"pieces"], 20)
             self.length = self.info[b"length"]
             q, r = divmod(self.length, self.piece_length)
             self.nbr_pieces = q + int(bool(r))
@@ -174,6 +182,26 @@ class Torrent:
              "piece_length: {}".format(self.piece_length),
              "nbr_pieces: {}".format(self.nbr_pieces)
         ])
+
+    def init_files(self):
+        """Create missing files, check existing ones"""
+        torrent_dir = os.path.expanduser("~/PyTo")
+        os.makedirs(torrent_dir, exist_ok=True)
+        torrent_file = os.path.join(torrent_dir, str(self.name))
+
+        try:
+            with open(torrent_file, "rb") as f:
+                pieces = iter(lambda: f.read(self.piece_length), b"")
+                for piece_index, piece in enumerate(pieces):
+                    # TODO: Check for IndexError. The file size may not match len(self.hashes)
+                    if self.hashes[piece_index] == sha1(piece).digest():
+                        # The bit at position piece_index is also the
+                        # r-th bit of the q-th byte. Set it to 1.
+                        q, r = divmod(piece_index, 8)
+                        self.bitfield[q] += (128 >> r)
+        except FileNotFoundError:
+            with open(torrent_file, "wb") as f:
+                f.truncate(self.length)
 
     def tracker_get(self):
         """Send an announce query to the tracker"""
@@ -203,15 +231,16 @@ class Torrent:
         elif isinstance(message, Have):
             try:
                 q, r = divmod(message.piece_index, 8)
-                peer.bitfield[q] = pow(2, r)
+                peer.bitfield[q] += (128 >> r)
             except IndexError:
                 raise ValueError("Invalid Have message")
 
 
 if __name__ == '__main__':
     logging.basicConfig(format='%(asctime)s %(message)s', level=logging.DEBUG)
-
     t = Torrent("./data/Torrent files/archlinux-2017.11.01-x86_64.iso.Torrent")
+    t.init_files()
+
     logging.debug(t)
     t.tracker_get()
     logging.debug(t.peers)

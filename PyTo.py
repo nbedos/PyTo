@@ -14,25 +14,26 @@ from hashlib import sha1
 import asyncio
 import logging
 import os
-from struct import pack
+from struct import unpack, iter_unpack, error as struct_error
+from typing import Iterator, Tuple
 
 from BEncoding import bdecode, bencode
-from Messages import *
+from Messages import Message, HandShake, Have, BitField
 
 
 class Peer:
     buffer_size = 4096
 
-    def __init__(self, buffer: bytes, bitfield_size: int):
-        ip_1, ip_2, ip_3, ip_4, port = unpack(">4BH", buffer)
-        self.ip = "{}.{}.{}.{}".format(ip_1, ip_2, ip_3, ip_4)
-        self.port = port
+    def __init__(self, torrent, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        self.reader = reader
+        self.writer = writer
+        self.ip, self.port = self.writer.get_extra_info('peername')
+
+        self.torrent = torrent
         self.choking = True
         self.choked = True
         self.interested = False
-        self.bitfield = bytearray(b"\x00"*bitfield_size)
-        self.reader = None
-        self.writer = None
+        self.bitfield = bytearray(b"\x00"*torrent.bitfield_size)
 
     def __repr__(self):
         return "Peer({}:{}, choking={}, choked={})".format(self.ip,
@@ -40,24 +41,23 @@ class Peer:
                                                            self.choking,
                                                            self.choked)
 
-    async def connect(self, loop):
-        """Initiate the connection with the peer"""
-        logging.debug("[{}:{}] Initiating TCP connection...".format(self.ip, self.port))
+    @classmethod
+    async def from_ip(cls, loop, torrent, ip: str, port: int):
+        """Generate an instance of Peer from an ip address"""
         try:
-            self.reader, self.writer = await asyncio.open_connection(self.ip, self.port, loop=loop)
-            logging.debug("[{}:{}] Connected!".format(self.ip, self.port))
+            reader, writer = await asyncio.open_connection(ip, port, loop=loop)
         except (ConnectionRefusedError,
                 ConnectionAbortedError,
                 ConnectionError,
                 ConnectionResetError,
                 TimeoutError,
                 OSError) as e:
-            logging.debug("[{}:{}] Exception: {}".format(self.ip, self.port, e))
-            self.close()
-            return
+            logging.debug("[{}:{}] Exception: {}".format(ip, port, e))
+            return None
+        return cls(torrent, reader, writer)
 
     async def read(self, buffer=b""):
-        """"Generator returning the Messages sent by the peer"""
+        """"Generator returning the Messages received from the peer"""
         logging.debug("[{}:{}] Buffer before: {}".format(self.ip, self.port, str(buffer)))
         while self.reader:
             try:
@@ -108,18 +108,14 @@ class Peer:
         self.writer = None
         self.reader = None
 
-    async def exchange(self, loop: asyncio.AbstractEventLoop, torrent):
-        await self.connect(loop)
-        if self.reader is None:
-            return
-
-        self.write(HandShake(t.info_hash))
+    async def exchange(self, torrent):
+        self.write(HandShake(torrent.info_hash))
 
         # TODO: Find the right syntax to read a single value from an asynchronous generator
         async for message in self.read():
             if not isinstance(message, HandShake):
                 logging.debug("[{}:{}] HandShake failed (invalid message)".format(self.ip, self.port))
-                if message.info_hash != torrent.info_hash:
+                if message.info_hash != self.torrent.info_hash:
                     logging.debug(("[{}:{}] HandShake failed "
                                    "(invalid info_hash: {})").format(self.ip,
                                                                      self.port,
@@ -127,7 +123,7 @@ class Peer:
             break
 
         async for message in self.read():
-            torrent.handle_message(message, self)
+            self.torrent.handle_message(message, self)
 
 
 def _split(l: list, n: int) -> list:
@@ -142,9 +138,19 @@ def _split(l: list, n: int) -> list:
     return chunks
 
 
-def _sanitize(filename: list):
+def _sanitize(filename: str) -> str:
     allowed_characters = {' ', '-', '[', ']', '}', '{', '_', '.'}
     return "".join([c for c in filename if c.isalnum() or c in allowed_characters]).rstrip()
+
+
+def _decode_ipv4(buffer: bytes) -> (str, int):
+    try:
+        ip_str, port = unpack(">4sH", buffer)
+        ip = ".".join([str(n) for n, in iter_unpack(">B", ip_str)])
+        return ip, port
+    except struct_error:
+        pass
+    raise ValueError("Invalid (ip, port)")
 
 
 class Torrent:
@@ -168,7 +174,8 @@ class Torrent:
             self.bitfield = bytearray(b"\x00" * self.bitfield_size)
 
             self.blocks = {}
-            self.peers = []
+            self.peers = dict([])
+            self.blacklist = dict([])
             return
         except KeyError:
             pass
@@ -183,11 +190,10 @@ class Torrent:
              "nbr_pieces: {}".format(self.nbr_pieces)
         ])
 
-    def init_files(self):
+    def init_files(self, download_dir: str):
         """Create missing files, check existing ones"""
-        torrent_dir = os.path.expanduser("~/PyTo")
-        os.makedirs(torrent_dir, exist_ok=True)
-        torrent_file = os.path.join(torrent_dir, str(self.name))
+        os.makedirs(download_dir, exist_ok=True)
+        torrent_file = os.path.join(download_dir, str(self.name))
 
         try:
             with open(torrent_file, "rb") as f:
@@ -203,7 +209,7 @@ class Torrent:
             with open(torrent_file, "wb") as f:
                 f.truncate(self.length)
 
-    def tracker_get(self):
+    def get_peers(self) -> Iterator[Tuple[str, int]]:
         """Send an announce query to the tracker"""
         h = {
             'info_hash': self.info_hash,
@@ -220,7 +226,16 @@ class Torrent:
         logging.debug(url)
         with urllib.request.urlopen(url) as response:
             d = bdecode(response.read())
-            self.peers = list(map(lambda b: Peer(b, self.bitfield_size), _split(d[b"peers"], 6)))
+            return map(_decode_ipv4, _split(d[b"peers"], 6))
+
+    def add_peer(self, p):
+        if (p.ip, p.port) in self.blacklist:
+            raise ValueError("This peer is blacklisted")
+
+        # TODO: Is there a way to get an exception when inserting the key if it is already in the
+        #  dictionary ?
+        if (p.ip, p.port) not in self.peers:
+            self.peers[(p.ip, p.port)] = p
 
     def handle_message(self, message: Message, peer: Peer):
         if isinstance(message, BitField):
@@ -236,17 +251,41 @@ class Torrent:
                 raise ValueError("Invalid Have message")
 
 
-if __name__ == '__main__':
-    logging.basicConfig(format='%(asctime)s %(message)s', level=logging.DEBUG)
-    t = Torrent("./data/Torrent files/archlinux-2017.11.01-x86_64.iso.Torrent")
-    t.init_files()
+async def handle_connection(torrent: Torrent, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    p = Peer(torrent, reader, writer)
+    if p is not None:
+        torrent.add_peer(p)
+        await p.exchange(torrent)
 
+
+async def wrapper(loop, torrent: Torrent, ip: str, port: int):
+    p = await Peer.from_ip(loop, torrent, ip, port)
+    if p is not None:
+        torrent.add_peer(p)
+        await p.exchange(torrent)
+
+
+def download(loop, torrent_file: str, listen_port: int, download_dir: str):
+    t = Torrent(torrent_file)
+    t.init_files(download_dir)
     logging.debug(t)
-    t.tracker_get()
+    peers = t.get_peers()
     logging.debug(t.peers)
 
-    loop = asyncio.get_event_loop()
-    coroutines = map(lambda p: p.exchange(loop, t), t.peers)
-    loop.run_until_complete(asyncio.gather(*coroutines))
+    return [asyncio.start_server(lambda r, w: handle_connection(t, r, w),
+                                       host='localhost',
+                                       port=listen_port,
+                                       loop=loop)] + \
+           [wrapper(loop, t, ip, port) for ip, port in peers]
 
+
+
+if __name__ == '__main__':
+    logging.basicConfig(format='%(asctime)s %(message)s', level=logging.DEBUG)
+    loop = asyncio.get_event_loop()
+
+    c1 = download(loop, "./data/Torrent files/archlinux-2017.11.01-x86_64.iso.Torrent", 6881,
+             os.path.expanduser("~/PyTo1"))
+
+    loop.run_until_complete(asyncio.gather(*c1))
     loop.close()

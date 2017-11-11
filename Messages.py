@@ -72,19 +72,19 @@ class Message(object):
         else:
             return None, buffer
 
-        total_length = message_length + LENGTH_SIZE
-        if buffer_length < total_length:
-            return None, buffer
-
         # Third step: use the message_id to invoke the from_payload() constructor of the right class
         decoding_functions = {cls.message_id: cls.from_payload for cls in
                               Message.__subclasses__() if
                               hasattr(cls, "message_id")}
 
         try:
-            m = decoding_functions[message_id](buffer[LENGTH_SIZE+1:total_length],
-                                               message_length-1)
-            return m, buffer[total_length:]
+            decode = decoding_functions[message_id]
+            total_length = message_length + LENGTH_SIZE
+            if buffer_length < total_length:
+                return None, buffer
+            else:
+                m = decode(buffer[LENGTH_SIZE+1:total_length], message_length-1)
+                return m, buffer[total_length:]
         except KeyError:
             pass
 

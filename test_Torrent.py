@@ -1,10 +1,12 @@
-from unittest import TestCase
 import unittest.mock
 import asyncio
-import PyTo
 import logging
-from tempfile import mkdtemp
+
 from shutil import copy, rmtree
+from tempfile import mkdtemp
+from unittest import TestCase
+
+from Torrent import Torrent, download
 
 
 class TestLocalDownload(TestCase):
@@ -17,17 +19,18 @@ class TestLocalDownload(TestCase):
 
         # First instance of PyTo (seeder)
         dir1 = mkdtemp()
+        print(dir1)
         copy("./data/files/lorem.txt", dir1)
-        with unittest.mock.patch.object(PyTo.Torrent, 'get_peers') as get_peers_mocked:
+        with unittest.mock.patch.object(Torrent, 'get_peers') as get_peers_mocked:
             get_peers_mocked.return_value = []
-            c1 = PyTo.download(loop, "./data/torrent files/lorem.txt.torrent",
+            c1 = download(loop, "./data/torrent files/lorem.txt.torrent",
                                6881, dir1)
 
         # Second instance of PyTo (leecher)
         dir2 = mkdtemp()
-        with unittest.mock.patch.object(PyTo.Torrent, 'get_peers') as get_peers_mocked:
+        with unittest.mock.patch.object(Torrent, 'get_peers') as get_peers_mocked:
             get_peers_mocked.return_value = [("127.0.0.1", 6881)]
-            c2 = PyTo.download(loop, "./data/torrent files/lorem.txt.torrent",
+            c2 = download(loop, "./data/torrent files/lorem.txt.torrent",
                                6882, dir2)
 
         loop.run_until_complete(asyncio.gather(*(c1 + c2)))
@@ -35,4 +38,3 @@ class TestLocalDownload(TestCase):
         loop.close()
         rmtree(dir1)
         rmtree(dir2)
-

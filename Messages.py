@@ -145,7 +145,7 @@ class HandShake(Message):
                 return None, buffer
             pstr, reserved, info_hash, peer_id = unpack(">x{}s8s20s20s".format(pstrlen),
                                                         buffer[:length])
-            return HandShake(info_hash, pstr, reserved, peer_id), buffer[:length]
+            return HandShake(info_hash, pstr, reserved, peer_id), buffer[length:]
         except struct_error:
             pass
         raise ValueError("Invalid binary format for HandShake message")

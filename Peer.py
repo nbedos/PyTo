@@ -13,27 +13,28 @@ from Messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterest
 class Peer:
     buffer_size = 4096
 
-    def __init__(self, torrent, reader: asyncio.StreamReader,
+    def __init__(self, bitfield_size: int, reader: asyncio.StreamReader,
                  writer: asyncio.StreamWriter):
         self.reader = reader
         self.writer = writer
         self.ip, self.port = self.writer.get_extra_info('peername')
 
-        self.torrent = torrent
         self.is_choked = True
         self.chokes_me = True
         self.is_interested = False
         self.interests_me = False
-        self.bitfield = bytearray(b"\x00"*torrent.bitfield_size)
+        self.bitfield_size = bitfield_size
+        self.bitfield = bytearray(b"\x00"*self.bitfield_size)
+        self.handshake_done = False
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "Peer({}:{}, is_choked={}, chokes_me={})".format(self.ip,
                                                                 self.port,
                                                                 self.is_choked,
                                                                 self.chokes_me)
 
     @classmethod
-    async def from_ip(cls, loop, torrent, ip: str, port: int):
+    async def from_ip(cls, loop, bitfield_size: int, ip: str, port: int):
         """Generate an instance of Peer from an ip address"""
         try:
             reader, writer = await asyncio.open_connection(ip, port, loop=loop)
@@ -45,7 +46,7 @@ class Peer:
                 OSError) as e:
             logging.debug("[{}:{}] Exception: {}".format(ip, port, e))
             return None
-        return cls(torrent, reader, writer)
+        return cls(bitfield_size, reader, writer)
 
     async def read(self, buffer=b""):
         """"Generator returning the Messages received from the peer"""
@@ -99,13 +100,44 @@ class Peer:
         self.writer = None
         self.reader = None
 
-    async def exchange(self, torrent):
-        self.write(HandShake(torrent.info_hash))
+    def handle_message(self, message: Message):
+        if not self.handshake_done:
+            if isinstance(message, HandShake):
+                self.handshake_done = True
+            else:
+                raise ValueError("Invalid message")
+        elif isinstance(message, KeepAlive):
+            pass
+        elif isinstance(message, Choke):
+            self.chokes_me = True
+        elif isinstance(message, Unchoke):
+            self.chokes_me = False
+        elif isinstance(message, Interested):
+            self.is_interested = True
+        elif isinstance(message, NotInterested):
+            self.is_interested = False
+        elif isinstance(message, Have):
+            try:
+                q, r = divmod(message.piece_index, 8)
+                self.bitfield[q] += (128 >> r)
+            except IndexError:
+                raise ValueError("Invalid Have message")
+        elif isinstance(message, BitField):
+            if message.bitfield_size == self.bitfield_size:
+                self.bitfield = bytearray(message.bitfield)
+            else:
+                raise ValueError("Invalid BitField message")
 
-        self.write(BitField(torrent.bitfield, torrent.bitfield_size))
+    async def exchange(self, torrent, initiated=False):
+        if initiated:
+            self.write(HandShake(torrent.info_hash))
+            self.write(BitField(torrent.bitfield, torrent.bitfield_size))
 
         async for message in self.read():
-            await self.torrent.handle_message(message, self)
+            self.handle_message(message)
+            messages = await torrent.handle_message(message, self.bitfield, initiated)
+            for m in messages:
+                self.write(m)
 
 
 if __name__ == '__main__':

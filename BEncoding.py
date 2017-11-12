@@ -90,7 +90,8 @@ def bencode(o) -> bytes:
     elif isinstance(o, int):
         return b"i%ie" % o
 
-    raise ValueError("Invalid object (object must be a bytestring, an integer, a list or a dictionary)")
+    raise ValueError("Invalid object (object must be a bytestring, an integer, a list or a "
+                     "dictionary)")
 
 
 def _bencodeDictItem(key: bytes, value):

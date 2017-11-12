@@ -53,7 +53,7 @@ class Torrent:
         self.pending = dict([])
 
     @classmethod
-    def from_file(cls, torrent_file):
+    def from_file(cls, torrent_file: str):
         with open(torrent_file, "rb") as f:
             m = bdecode(f.read())
         try:
@@ -68,7 +68,7 @@ class Torrent:
             pass
         raise ValueError("Invalid torrent file")
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "\n\t".join([
              "Torrent: {}".format(self.name),
              "    info_hash: {}".format(self.info_hash),
@@ -146,33 +146,29 @@ class Torrent:
         if (p.ip, p.port) not in self.peers:
             self.peers[(p.ip, p.port)] = p
 
-    async def handle_message(self, message: Message, peer: Peer):
+    async def handle_message(self, message: Message, peer_bitfield, initiated):
         default_block_length = pow(2, 14)
-        if isinstance(message, KeepAlive):
-            pass
-        elif isinstance(message, Choke):
-            peer.chokes_me = True
-        elif isinstance(message, Unchoke):
-            peer.chokes_me = False
-        elif isinstance(message, Interested):
-            peer.is_interested = True
-        elif isinstance(message, NotInterested):
-            peer.is_interested = False
-        elif isinstance(message, Have):
-            try:
-                q, r = divmod(message.piece_index, 8)
-                peer.bitfield[q] += (128 >> r)
-            except IndexError:
-                raise ValueError("Invalid Have message")
-        elif isinstance(message, BitField):
-            if message.bitfield_size == self.bitfield_size:
-                peer.bitfield = bytearray(message.bitfield)
-
-                r = self.request_new_piece(peer.bitfield)
-                if r is not None:
-                    peer.write(r)
+        if isinstance(message, HandShake):
+            if self.info_hash == message.info_hash:
+                if not initiated:
+                    return [
+                        HandShake(self.info_hash),
+                        BitField(self.bitfield, self.bitfield_size)
+                    ]
             else:
-                raise ValueError("Invalid BitField message")
+                raise ValueError("Invalid HandShake message")
+        elif isinstance(message, Unchoke):
+            r = self.request_new_piece(peer_bitfield)
+            if r is not None:
+                return [r]
+        elif isinstance(message, Interested):
+            return [Unchoke()]
+        elif isinstance(message, NotInterested):
+            return [Choke()]
+        elif isinstance(message, BitField):
+            r = self.request_new_piece(peer_bitfield)
+            if r is not None:
+                return [Interested()]
         elif isinstance(message, Request):
             loop = asyncio.get_event_loop()
             done, not_done = await asyncio.wait([loop.run_in_executor(None,
@@ -181,10 +177,12 @@ class Torrent:
             results = [task.result() for task in done]
             piece = results.pop()
             block = piece[message.block_offset:message.block_offset+message.block_length]
-            peer.write(Piece(len(block),
-                             message.piece_index,
-                             message.block_offset,
-                             block))
+            return [
+                Piece(len(block),
+                      message.piece_index,
+                      message.block_offset,
+                      block)
+            ]
         elif isinstance(message, Piece):
             if message.piece_index in self.pending:
                 blocks = self.pending[message.piece_index]
@@ -199,7 +197,7 @@ class Torrent:
                         if unrequested_blocks:
                             offset = unrequested_blocks.pop()
                             blocks[offset] = (True, b"")
-                            peer.write(Request(message.piece_index, offset, default_block_length))
+                            return [Request(message.piece_index, offset, default_block_length)]
                     else:
                         piece = b"".join([block for _, block in blocks.values()])
                         if self.hashes[message.piece_index] == sha1(piece).digest():
@@ -213,20 +211,17 @@ class Torrent:
                             del self.pending[message.piece_index]
                             q, r = divmod(message.piece_index, 8)
                             self.bitfield[q] += (128 >> r)
-                            peer.write(Have(message.piece_index))
-                            r = self.request_new_piece(peer.bitfield)
+
+                            r = self.request_new_piece(peer_bitfield)
                             if r is not None:
-                                peer.write(r)
+                                return [Have(message.piece_index), r]
                             else:
-                                pass
+                                return [Have(message.piece_index)]
                         else:
                             del self.pending[message.piece_index]
                 else:
                     pass
-        elif isinstance(message, Cancel):
-            pass
-        elif isinstance(message, Port):
-            pass
+        return []
 
     def request_new_piece(self, peer_bitfield: bytes, block_length: int=16384) -> Union[Message,
                                                                                         None]:
@@ -265,17 +260,17 @@ def _interesting_piece(b1: bytes, b2: bytes, index_blacklist: set) -> Union[None
 
 
 async def handle_connection(torrent: Torrent, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    p = Peer(torrent, reader, writer)
+    p = Peer(torrent.bitfield_size, reader, writer)
     if p is not None:
         torrent.add_peer(p)
         await p.exchange(torrent)
 
 
 async def wrapper(loop, torrent: Torrent, ip: str, port: int):
-    p = await Peer.from_ip(loop, torrent, ip, port)
+    p = await Peer.from_ip(loop, torrent.bitfield_size, ip, port)
     if p is not None:
         torrent.add_peer(p)
-        await p.exchange(torrent)
+        await p.exchange(torrent, initiated=True)
 
 
 def download(loop, torrent_file: str, listen_port: int, download_dir: str):

@@ -24,10 +24,10 @@ Functionalities:
  * **[implemented]** Parsing a Torrent file (single file mode)
  * **[implemented]** Querying the tracker to get a list of peers
  * **[implemented]** Connecting to peers and parsing their messages
- * **[in progress]** Checking on disk if the file has already been partially downloaded when creating a Torrent instance
- * **[to be done]** Handling spontaneous connections from peers
- * **[to be done]** Exchanging file pieces with peers
- * **[to be done]** Having the client download from other instances of itself for testing
+ * **[implemented]** Checking on disk if the file has already been partially downloaded when creating a Torrent instance
+ * **[implemented]** Handling spontaneous connections from peers
+ * **[in progress]** Exchanging file pieces with peers
+ * **[in progress]** Having the client download from other instances of itself for testing
  * **[to be done]** Download a whole file from the Internet
  * **[to be done]** Handling Torrent with multiple files
  * **[to be done]** Starting downloads from a magnet link

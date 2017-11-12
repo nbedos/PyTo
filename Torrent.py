@@ -11,7 +11,7 @@ import os
 
 from hashlib import sha1
 from struct import unpack, iter_unpack, error as struct_error
-from typing import Iterator, Tuple, Union
+from typing import Iterator, Tuple, Union, List
 
 from BEncoding import bdecode, bencode
 from Messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, \
@@ -20,31 +20,50 @@ from Peer import Peer
 
 
 class Torrent:
-    def __init__(self, torrent_file):
-        # TODO: Check if all necessary keys are in the info dictionary
+    """Represent a Torrent file
+
+    Attributes:
+        - announce: announce URL of the tracker
+        - name: suggested filename for the downloaded file
+        - info_hash: SHA1 hash of the info dictionary in the torrent file
+        - hashes: SHA1 hash of each piece of the torrent
+        - piece_length: length in bytes of a piece
+        - length: length in bytes of the file
+    """
+    def __init__(self, announce: str, name: str, info_hash: bytes, hashes: List[bytes],
+                 piece_length: int, length: int):
+        self.announce = announce
+        self.name = _sanitize(name)
+        self.info_hash = info_hash
+        self.hashes = hashes
+        if piece_length <= 0 or piece_length > length:
+            raise ValueError("Lengths must verify 0 < piece_length <= length")
+        self.length = length
+        self.piece_length = piece_length
+        q, r = divmod(self.length, self.piece_length)
+        self.nbr_pieces = q + int(bool(r))
+        q, r = divmod(self.nbr_pieces, 8)
+        self.bitfield_size = q + int(bool(r))
+        self.bitfield = bytearray(b"\x00" * self.bitfield_size)
+        self.file = None
+
+        self.blocks = {}
+        self.peers = dict([])
+        self.blacklist = dict([])
+        self.pending = dict([])
+
+    @classmethod
+    def from_file(cls, torrent_file):
         with open(torrent_file, "rb") as f:
             m = bdecode(f.read())
         try:
-            self.announce = m[b'announce']
-            self.info = m[b'info']
-            self.name = _sanitize(self.info[b'name'].decode("utf-8"))
-            self.info_hash = sha1(bencode(self.info)).digest()
-
-            self.piece_length = self.info[b"piece length"]
-            self.hashes = _split(self.info[b"pieces"], 20)
-            self.length = self.info[b"length"]
-            q, r = divmod(self.length, self.piece_length)
-            self.nbr_pieces = q + int(bool(r))
-            q, r = divmod(self.nbr_pieces, 8)
-            self.bitfield_size = q + int(bool(r))
-            self.bitfield = bytearray(b"\x00" * self.bitfield_size)
-            self.file = None
-
-            self.blocks = {}
-            self.peers = dict([])
-            self.blacklist = dict([])
-            self.pending = dict([])
-            return
+            info = m[b'info']
+            return cls(m[b'announce'].decode("utf-8"),
+                       info[b'name'].decode("utf-8"),
+                       sha1(bencode(info)).digest(),
+                       _split(info[b"pieces"], 20),
+                       info[b"piece length"],
+                       info[b"length"])
         except KeyError:
             pass
         raise ValueError("Invalid torrent file")
@@ -52,17 +71,19 @@ class Torrent:
     def __repr__(self):
         return "\n\t".join([
              "Torrent: {}".format(self.name),
-             "announce: {}".format(self.announce.decode()),
-             "length: {}".format(self.length),
-             "piece_length: {}".format(self.piece_length),
-             "nbr_pieces: {}".format(self.nbr_pieces)
+             "    info_hash: {}".format(self.info_hash),
+             "     announce: {}".format(self.announce),
+             "       length: {}".format(self.length),
+             " piece_length: {}".format(self.piece_length),
+             "   nbr_pieces: {}".format(self.nbr_pieces),
+             "     bitfield: {}".format(self.bitfield),
+             "bitfield_size: {}".format(self.bitfield_size),
         ])
 
     def read_piece(self, piece_index: int) -> bytes:
         offset = piece_index * self.piece_length
         self.file.seek(offset)
-        data = self.file.read(self.piece_length)
-        return data
+        return self.file.read(self.piece_length)
 
     def write_piece(self, piece_index: int, piece: bytes):
         self.file.seek(piece_index * self.piece_length)
@@ -75,9 +96,10 @@ class Torrent:
         reopen_read_write = False
         try:
             f = open(torrent_file, "rb")
+            if os.stat(torrent_file).st_size != self.length:
+                raise ValueError("The file size does not match with the torrent size")
             pieces = iter(lambda: f.read(self.piece_length), b"")
             for piece_index, piece in enumerate(pieces):
-                # TODO: Check for IndexError. The file size may not match len(self.hashes)
                 if self.hashes[piece_index] == sha1(piece).digest():
                     # The bit at position piece_index is also the
                     # r-th bit of the q-th byte. Set it to 1.
@@ -104,12 +126,12 @@ class Torrent:
             'port': 6881,
             'uploaded': 0,
             'downloaded': 0,
-            'left': self.info[b'length'],
+            'left': self.length,
             'event': "started",
             'compact': 1
         }
 
-        url = "{}?{}".format(self.announce.decode(), urllib.parse.urlencode(h))
+        url = "{}?{}".format(self.announce, urllib.parse.urlencode(h))
         logging.debug(url)
         with urllib.request.urlopen(url) as response:
             d = bdecode(response.read())
@@ -257,7 +279,7 @@ async def wrapper(loop, torrent: Torrent, ip: str, port: int):
 
 
 def download(loop, torrent_file: str, listen_port: int, download_dir: str):
-    t = Torrent(torrent_file)
+    t = Torrent.from_file(torrent_file)
     t.init_files(download_dir)
     logging.debug(t)
     peers = t.get_peers()

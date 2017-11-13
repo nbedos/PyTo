@@ -19,6 +19,14 @@ from Messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterest
 from Peer import Peer
 
 
+module_logger = logging.getLogger(__name__)
+
+class TorrentAdapter(logging.LoggerAdapter):
+    """Add the port and ip of the Peer to logger messages"""
+    def process(self, msg, kwargs):
+        return '{:>20} {}'.format(self.extra['name'], msg), kwargs
+
+
 class Torrent:
     """Represent a Torrent file
 
@@ -52,6 +60,9 @@ class Torrent:
         self.blacklist = dict([])
         self.pending = dict([])
 
+        self.logger = TorrentAdapter(module_logger, {'name': self.name})
+
+
     @classmethod
     def from_file(cls, torrent_file: str):
         with open(torrent_file, "rb") as f:
@@ -81,11 +92,15 @@ class Torrent:
         ])
 
     def read_piece(self, piece_index: int) -> bytes:
+        self.logger.debug("reading piece #{}".format(piece_index))
+        print("reading piece #{}".format(piece_index))
         offset = piece_index * self.piece_length
         self.file.seek(offset)
         return self.file.read(self.piece_length)
 
     def write_piece(self, piece_index: int, piece: bytes):
+        self.logger.debug("writing piece #{}".format(piece_index))
+        print("writing piece #{}".format(piece_index))
         self.file.seek(piece_index * self.piece_length)
         self.file.write(piece)
 
@@ -132,7 +147,7 @@ class Torrent:
         }
 
         url = "{}?{}".format(self.announce, urllib.parse.urlencode(h))
-        logging.debug(url)
+        self.logger.debug("announce = {}".format(url))
         with urllib.request.urlopen(url) as response:
             d = bdecode(response.read())
             return map(_decode_ipv4, _split(d[b"peers"], 6))
@@ -262,6 +277,7 @@ def _interesting_piece(b1: bytes, b2: bytes, index_blacklist: set) -> Union[None
 async def handle_connection(torrent: Torrent, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     p = Peer(torrent.bitfield_size, reader, writer)
     if p is not None:
+        torrent.logger.debug("accepted incoming connection from {}:{}", p.ip, p.port)
         torrent.add_peer(p)
         await p.exchange(torrent)
 

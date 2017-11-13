@@ -1,6 +1,7 @@
 import unittest.mock
 import asyncio
 import logging
+import concurrent.futures
 
 from shutil import copy, rmtree
 from tempfile import mkdtemp
@@ -14,8 +15,14 @@ class TestLocalDownload(TestCase):
 
     The Torrent.get_peers method is mocked to avoid using a tracker"""
     def test_2_instances(self):
-        logging.basicConfig(format='%(asctime)s %(message)s', level=logging.DEBUG)
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format="[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d]@%(threadName)s "
+                   "%(message)s",
+            datefmt="%H:%M:%S")
         loop = asyncio.get_event_loop()
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        loop.set_default_executor(executor)
 
         # First instance of PyTo (seeder)
         dir1 = mkdtemp()

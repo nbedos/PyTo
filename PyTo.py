@@ -15,7 +15,11 @@ from Torrent import download
 
 
 if __name__ == '__main__':
-    logging.basicConfig(format='%(asctime)s %(message)s', level=logging.DEBUG)
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d]@%(threadName)s "
+               "%(message)s",
+        datefmt="%H:%M:%S")
 
     dir = mkdtemp()
 

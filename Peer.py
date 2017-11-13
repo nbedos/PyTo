@@ -9,10 +9,22 @@ import logging
 from Messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, \
                      BitField, Request, Piece, Cancel, Port, HandShake
 
+connectionErrors = (ConnectionRefusedError,
+                    ConnectionAbortedError,
+                    ConnectionError,
+                    ConnectionResetError,
+                    TimeoutError,
+                    OSError)
+
+module_logger = logging.getLogger(__name__)
+
+class PeerAdapter(logging.LoggerAdapter):
+    """Add the port and ip of the Peer to logger messages"""
+    def process(self, msg, kwargs):
+        return '{:>15}:{:<5} {}'.format(self.extra['ip'], self.extra['port'], msg), kwargs
+
 
 class Peer:
-    buffer_size = 4096
-
     def __init__(self, bitfield_size: int, reader: asyncio.StreamReader,
                  writer: asyncio.StreamWriter):
         self.reader = reader
@@ -27,6 +39,8 @@ class Peer:
         self.bitfield = bytearray(b"\x00"*self.bitfield_size)
         self.handshake_done = False
 
+        self.logger = PeerAdapter(module_logger, {'ip': self.ip, 'port': self.port})
+
     def __repr__(self) -> str:
         return "Peer({}:{}, is_choked={}, chokes_me={})".format(self.ip,
                                                                 self.port,
@@ -38,63 +52,47 @@ class Peer:
         """Generate an instance of Peer from an ip address"""
         try:
             reader, writer = await asyncio.open_connection(ip, port, loop=loop)
-        except (ConnectionRefusedError,
-                ConnectionAbortedError,
-                ConnectionError,
-                ConnectionResetError,
-                TimeoutError,
-                OSError) as e:
+        except connectionErrors as e:
             logging.debug("[{}:{}] Exception: {}".format(ip, port, e))
             return None
         return cls(bitfield_size, reader, writer)
 
     async def read(self, buffer=b""):
         """"Generator returning the Messages received from the peer"""
-        #logging.debug("[{}:{}] Buffer before: {}".format(self.ip, self.port, str(buffer)))
+        buffer_size = 4096
+
         while self.reader:
             try:
-                buffer += await self.reader.read(Peer.buffer_size)
-            except (ConnectionRefusedError,
-                    ConnectionAbortedError,
-                    ConnectionError,
-                    ConnectionResetError,
-                    TimeoutError,
-                    OSError) as e:
-                #logging.debug("[{}:{}] Exception: {}".format(self.ip, self.port, e))
+                buffer += await self.reader.read(buffer_size)
+            except connectionErrors as e:
+                self.logger.debug("Exception: {}".format(e))
                 self.close()
                 break
 
-            if self.reader.at_eof():
-                self.close()
-                break
-
-            #logging.debug("[{}:{}] Buffer during: {}".format(self.ip, self.port, str(buffer)))
             while buffer:
                 try:
                     message, buffer = Message.from_bytes(buffer)
                     if message is None:
                         break
                     else:
-                        logging.debug("[{}:{}] Message received: {}".format(self.ip,
-                                                                            self.port,
-                                                                            str(message)))
-                        #logging.debug(
-                        #    "[{}:{}] Buffer after: {}".format(self.ip, self.port, str(buffer)))
+                        self.logger.debug("Message received: {}".format(str(message)))
                         yield message
                 except ValueError:
-                    logging.error("[{}:{}] Received invalid message: {}".format(self.ip,
-                                                                                self.port,
-                                                                                str(buffer)))
+                    self.logger.error("Received invalid message: {}".format(str(buffer)))
                     self.close()
                     break
 
+            if self.reader.at_eof():
+                self.close()
+                break
+
     def write(self, message):
-        logging.debug("[{}:{}] write: {}".format(self.ip, self.port, str(message)))
+        self.logger.debug("write: {}".format(str(message)))
         # TODO: Check exceptions
         self.writer.write(message.to_bytes())
 
     def close(self):
-        logging.debug("[{}:{}] Connection closed".format(self.ip, self.port))
+        self.logger.debug("Connection closed")
         if self.writer:
             self.writer.close()
         self.writer = None

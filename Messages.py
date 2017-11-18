@@ -402,8 +402,4 @@ class Port(Message):
 
 
 if __name__ == "__main__":
-    m = Cancel(1, 2, 3)
-    n = Cancel(1, 2, 3)
-    print(m.to_bytes())
-    print(Message.from_bytes(m.to_bytes()) == m)
-    print(m == n)
+    pass

@@ -18,6 +18,7 @@ connectionErrors = (ConnectionRefusedError,
 
 module_logger = logging.getLogger(__name__)
 
+
 class PeerAdapter(logging.LoggerAdapter):
     """Add the port and ip of the Peer to logger messages"""
     def process(self, msg, kwargs):

@@ -11,7 +11,7 @@ import os
 
 from hashlib import sha1
 from struct import pack, unpack, iter_unpack, error as struct_error
-from typing import Iterator, Tuple, Union, List
+from typing import Iterator, Tuple, Union, List, Set
 
 from BEncoding import bdecode, bencode
 from Messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, \
@@ -50,9 +50,7 @@ class Torrent:
         self.piece_length = piece_length
         q, r = divmod(self.length, self.piece_length)
         self.nbr_pieces = q + int(bool(r))
-        q, r = divmod(self.nbr_pieces, 8)
-        self.bitfield_size = q + int(bool(r))
-        self.bitfield = bytearray(b"\x00" * self.bitfield_size)
+        self.pieces = set([])
         self.file = None
 
         self.blocks = {}
@@ -87,8 +85,7 @@ class Torrent:
              "       length: {}".format(self.length),
              " piece_length: {}".format(self.piece_length),
              "   nbr_pieces: {}".format(self.nbr_pieces),
-             "     bitfield: {}".format(self.bitfield),
-             "bitfield_size: {}".format(self.bitfield_size),
+             "       pieces: {}".format(self.pieces),
         ])
 
     def read_piece(self, piece_index: int) -> bytes:
@@ -118,8 +115,7 @@ class Torrent:
                 if self.hashes[piece_index] == sha1(piece).digest():
                     # The bit at position piece_index is also the
                     # r-th bit of the q-th byte. Set it to 1.
-                    q, r = divmod(piece_index, 8)
-                    self.bitfield[q] += (128 >> r)
+                    self.pieces.add(piece_index)
                 else:
                     reopen_read_write = True
         except FileNotFoundError:
@@ -162,29 +158,21 @@ class Torrent:
             self.peers[(p.ip, p.port)] = p
 
     def is_complete(self):
-        q, r = divmod(self.nbr_pieces, 8)
-        if r == 0:
-            complete_bitfield = b"\xff" * self.bitfield_size
-        else:
-            last_byte = sum([128 >> i for i in range(0, r)])
-            complete_bitfield = b"\xff" * (self.bitfield_size - 1) + pack(">B", last_byte)
+        return self.pieces == set(range(0,self.nbr_pieces))
 
-        return self.bitfield == complete_bitfield
-
-
-    async def handle_message(self, message: Message, peer_bitfield, initiated):
+    async def handle_message(self, message: Message, peer_pieces: Set[int], initiated):
         default_block_length = pow(2, 14)
         if isinstance(message, HandShake):
             if self.info_hash == message.info_hash:
                 if not initiated:
                     return [
                         HandShake(self.info_hash),
-                        BitField(self.bitfield, self.bitfield_size)
+                        BitField(self.pieces, self.nbr_pieces)
                     ]
             else:
                 raise ValueError("Invalid HandShake message")
         elif isinstance(message, Unchoke):
-            r = self.request_new_block(peer_bitfield)
+            r = self.request_new_block(peer_pieces)
             if r is not None:
                 return [r]
         elif isinstance(message, Interested):
@@ -192,8 +180,9 @@ class Torrent:
         elif isinstance(message, NotInterested):
             return [Choke()]
         elif isinstance(message, BitField):
-            r = self.request_new_block(peer_bitfield)
-            if r is not None:
+            # TODO : XXX we create a request be never send it!
+            #r = self.request_new_block(peer_pieces)
+            #if r is not None:
                 return [Interested()]
         elif isinstance(message, Request):
             loop = asyncio.get_event_loop()
@@ -217,13 +206,12 @@ class Torrent:
                     blocks[message.block_offset] = (True, message.block)
                     missing_blocks = [(offset, requested) for offset, (requested, block) in
                                       blocks.items() if not block]
-                    if missing_blocks:
-                        unrequested_blocks = [offset for offset, requested in missing_blocks if
-                                              not requested]
-                        if unrequested_blocks:
-                            offset = unrequested_blocks.pop()
-                            blocks[offset] = (True, b"")
-                            return [Request(message.piece_index, offset, default_block_length)]
+                    unrequested_blocks = [offset for offset, requested in missing_blocks if
+                                          not requested]
+                    if unrequested_blocks:
+                        offset = unrequested_blocks.pop()
+                        blocks[offset] = (True, b"")
+                        return [Request(message.piece_index, offset, default_block_length)]
                     else:
                         piece = b"".join([block for _, block in blocks.values()])
                         if self.hashes[message.piece_index] == sha1(piece).digest():
@@ -237,11 +225,11 @@ class Torrent:
                                                      piece)
                             ])
                             del self.pending[message.piece_index]
-                            q, r = divmod(message.piece_index, 8)
-                            self.bitfield[q] += (128 >> r)
-                            self.logger.debug("Updated bitfield: {}".format(self.bitfield))
+                            self.pieces.add(message.piece_index)
 
-                            r = self.request_new_block(peer_bitfield)
+                            self.logger.debug("Update list of pieces: {}".format(self.pieces))
+
+                            r = self.request_new_block(peer_pieces)
                             if self.is_complete():
                                 print("Complete!")
                             if r is not None:
@@ -256,24 +244,24 @@ class Torrent:
                     pass
         return []
 
-    def request_new_block(self, peer_bitfield: bytes, block_length: int=16384) -> Union[Request,
-                                                                                        None]:
+    def request_new_block(self, peer_pieces: Set[int], block_length: int=16384) -> Union[Request,
+                                                                                         None]:
         """Build a Request message for a new block.
 
         The block must :
             - be missing
             - belong to a piece owned by the peer
             - not be pending"""
-        # Make a blacklist of the pieces which have all their blocks pending
-        blacklist = [p for p in self.pending.keys() if self.pending[p] and
-                     all([requested for (requested, _) in self.pending[p].values()])]
-        blacklist_bitfield = bytearray(b"\x00" * self.bitfield_size)
-        for piece_index in blacklist:
-            q, r = divmod(piece_index, 8)
-            blacklist_bitfield[q] += (128 >> r)
+        all_pieces = set(range(0, self.nbr_pieces))
 
-        piece_index = _missing_piece(self.bitfield, peer_bitfield, blacklist_bitfield)
-        if piece_index is None:
+        # Make a blacklist of the pieces which have all their blocks pending
+        blacklist = set([p for p in self.pending.keys() if self.pending[p] and
+                         all([requested for (requested, _) in self.pending[p].values()])])
+
+        requestable_pieces = (all_pieces - self.pieces - blacklist) & peer_pieces
+        try:
+            piece_index = requestable_pieces.pop()
+        except KeyError:
             return None
 
         if piece_index == self.nbr_pieces - 1:
@@ -301,30 +289,16 @@ class Torrent:
         return Request(piece_index, block_offset, block_length)
 
 
-# TODO: Ignore trailing bits if the number of pieces is not divisible by 8
-def _missing_piece(b1: bytes, b2: bytes, blacklist: bytes) -> Union[None, int]:
-    """Return the index of a bit which is set in b2 but not in b1 or blacklist"""
-    z = map(lambda b: ((~ b[0]) & b[1] & (~ b[2])), zip(b1, b2, blacklist))
-    comparison = ((i, b) for i, b in enumerate(z) if b != 0)
-    try:
-        byte_index, byte = next(comparison)
-    except StopIteration:
-        return None
-
-    leftmost_bit_set = next((i for i in range(7, -1, -1) if (byte >> i) & 1 != 0))
-    return 8*byte_index + (7 - leftmost_bit_set)
-
-
 async def handle_connection(torrent: Torrent, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    p = Peer(torrent.bitfield_size, reader, writer)
+    p = Peer(reader, writer)
     if p is not None:
-        torrent.logger.debug("accepted incoming connection from {}:{}", p.ip, p.port)
+        torrent.logger.debug("accepted incoming connection from {}:{}".format(p.ip, p.port))
         torrent.add_peer(p)
         await p.exchange(torrent)
 
 
 async def wrapper(loop, torrent: Torrent, ip: str, port: int):
-    p = await Peer.from_ip(loop, torrent.bitfield_size, ip, port)
+    p = await Peer.from_ip(loop, ip, port)
     if p is not None:
         torrent.add_peer(p)
         await p.exchange(torrent, initiated=True)

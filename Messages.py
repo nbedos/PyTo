@@ -13,6 +13,7 @@ Specification: https://wiki.theory.org/index.php/BitTorrentSpecification#Peer_wi
 # TODO: Implement @properties for checking attributes in constructors
 
 from struct import pack, unpack, error as struct_error
+from typing import Set
 
 
 class Message(object):
@@ -236,24 +237,36 @@ class BitField(Message):
         - bitfield = bitfield representing downloaded pieces (bitfield_size bytes)"""
     message_id = 5
 
-    def __init__(self, bitfield: bytes, bitfield_size: int):
-        super(BitField, self).__init__(1 + bitfield_size)
-        self.bitfield_size = bitfield_size
-        self.bitfield = bitfield
+    def __init__(self, pieces: Set[int], nbr_pieces: int):
+        q, r = divmod(nbr_pieces, 8)
+        nbr_bytes = q + int(bool(r))
+        super(BitField, self).__init__(1 + nbr_bytes)
+        self.pieces = pieces
+        self.nbr_pieces = nbr_pieces
 
     def to_bytes(self) -> bytes:
+        bitfield = bytearray(b"\x00" * (self.length - 1))
+        for piece_index in self.pieces:
+            q, r = divmod(piece_index, 8)
+            bitfield[q] += 128 >> r
         try:
-            return pack(">IB{}s".format(self.bitfield_size),
+            return pack(">IB{}s".format(len(bitfield)),
                         self.length,
                         self.message_id,
-                        self.bitfield)
+                        bitfield)
         except struct_error:
             pass
         raise ValueError("Invalid values for encoding the BitField instance")
 
     @classmethod
     def from_payload(cls, payload: bytes, payload_length: int):
-        return BitField(payload, payload_length)
+        pieces = set([])
+        for index, byte in enumerate(payload):
+            for order in range(7, -1, -1):
+                if (byte >> order) & 1:
+                    pieces.add(index * 8 + 7 - order)
+
+        return BitField(pieces, payload_length*8)
 
 
 class Request(Message):

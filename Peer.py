@@ -26,8 +26,7 @@ class PeerAdapter(logging.LoggerAdapter):
 
 
 class Peer:
-    def __init__(self, bitfield_size: int, reader: asyncio.StreamReader,
-                 writer: asyncio.StreamWriter):
+    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         self.reader = reader
         self.writer = writer
         self.ip, self.port = self.writer.get_extra_info('peername')
@@ -36,8 +35,7 @@ class Peer:
         self.chokes_me = True
         self.is_interested = False
         self.interests_me = False
-        self.bitfield_size = bitfield_size
-        self.bitfield = bytearray(b"\x00"*self.bitfield_size)
+        self.pieces = set([])
         self.handshake_done = False
 
         self.logger = PeerAdapter(module_logger, {'ip': self.ip, 'port': self.port})
@@ -49,14 +47,14 @@ class Peer:
                                                                 self.chokes_me)
 
     @classmethod
-    async def from_ip(cls, loop, bitfield_size: int, ip: str, port: int):
+    async def from_ip(cls, loop, ip: str, port: int):
         """Generate an instance of Peer from an ip address"""
         try:
             reader, writer = await asyncio.open_connection(ip, port, loop=loop)
         except connectionErrors as e:
             logging.debug("[{}:{}] Exception: {}".format(ip, port, e))
             return None
-        return cls(bitfield_size, reader, writer)
+        return cls(reader, writer)
 
     async def read(self, buffer=b""):
         """"Generator returning the Messages received from the peer"""
@@ -116,25 +114,18 @@ class Peer:
         elif isinstance(message, NotInterested):
             self.is_interested = False
         elif isinstance(message, Have):
-            try:
-                q, r = divmod(message.piece_index, 8)
-                self.bitfield[q] += (128 >> r)
-            except IndexError:
-                raise ValueError("Invalid Have message")
+            self.pieces.add(message.piece_index)
         elif isinstance(message, BitField):
-            if message.bitfield_size == self.bitfield_size:
-                self.bitfield = bytearray(message.bitfield)
-            else:
-                raise ValueError("Invalid BitField message")
+            self.pieces = message.pieces
 
     async def exchange(self, torrent, initiated=False):
         if initiated:
             self.write(HandShake(torrent.info_hash))
-            self.write(BitField(torrent.bitfield, torrent.bitfield_size))
+            self.write(BitField(torrent.pieces, torrent.nbr_pieces))
 
         async for message in self.read():
             self.handle_message(message)
-            messages = await torrent.handle_message(message, self.bitfield, initiated)
+            messages = await torrent.handle_message(message, self.pieces, initiated)
             for m in messages:
                 self.write(m)
 

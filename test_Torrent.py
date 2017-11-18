@@ -18,24 +18,24 @@ class TestTorrentMethods(TestCase):
 
         with self.subTest(case="Peer has no pieces"):
             t = Torrent("", "", b"", [], piece_length, torrent_length)
-            peer_bitfield = t.bitfield_size * b'\x00'
-            self.assertEqual(t.request_new_block(peer_bitfield), None)
+            peer_pieces = set([])
+            self.assertEqual(t.request_new_block(peer_pieces), None)
 
         with self.subTest(case="Peer has no interesting pieces"):
             t = Torrent("", "", b"", [], piece_length, torrent_length)
-            t.bitfield = bytearray(t.bitfield_size * b'\xa5')
-            peer_bitfield = t.bitfield
-            self.assertEqual(t.request_new_block(peer_bitfield), None)
+            t.pieces = set(range(0, t.nbr_pieces, 2))
+            peer_pieces = t.pieces
+            self.assertEqual(t.request_new_block(peer_pieces), None)
 
         with self.subTest(case="Peer has all the pieces"):
             t = Torrent("", "", b"", [], piece_length, torrent_length)
-            peer_bitfield = t.bitfield_size * b'\xff'
+            peer_pieces = set(range(0, t.nbr_pieces))
             requested_blocks = set([])
-            req = t.request_new_block(peer_bitfield, block_length)
+            req = t.request_new_block(peer_pieces, block_length)
             while req is not None:
                 # Record all the block requested
                 requested_blocks.add((req.piece_index, req.block_offset))
-                req = t.request_new_block(peer_bitfield, block_length)
+                req = t.request_new_block(peer_pieces, block_length)
             missing_blocks = set().union(*[
                 [(i, b * block_length) for i in range(0, t.nbr_pieces)]
                 for b in range(0, blocks_per_piece)
@@ -44,15 +44,15 @@ class TestTorrentMethods(TestCase):
 
         with self.subTest(case="Peer has all the missing pieces"):
             t = Torrent("", "", b"", [], piece_length, torrent_length)
-            # We have pieces 0, 2, 4, 6... (b'\xaa' = 10101010)
-            t.bitfield = bytearray(t.bitfield_size * b'\xaa')
-            # The peer has pieces 1, 3, 5, 7... (b'\x55' = 01010101)
-            peer_bitfield = t.bitfield_size * b'\x55'
+            # We have pieces 0, 2, 4, 6...
+            t.pieces = set(range(0, t.nbr_pieces, 2))
+            # The peer has pieces 1, 3, 5, 7...
+            peer_pieces = set(range(1, t.nbr_pieces, 2))
             requested_blocks = set([])
-            req = t.request_new_block(peer_bitfield)
+            req = t.request_new_block(peer_pieces)
             while req is not None:
                 requested_blocks.add((req.piece_index, req.block_offset))
-                req = t.request_new_block(peer_bitfield)
+                req = t.request_new_block(peer_pieces)
             missing_blocks = set().union(*[
                 [(i, b * block_length) for i in range(1, t.nbr_pieces, 2)]
                 for b in range(0, blocks_per_piece)
@@ -81,15 +81,13 @@ class TestLocalDownload(TestCase):
         copy("./data/files/lorem.txt", dir1)
         with unittest.mock.patch.object(Torrent, 'get_peers') as get_peers_mocked:
             get_peers_mocked.return_value = []
-            c1 = download(loop, "./data/torrent files/lorem.txt.torrent",
-                               6881, dir1)
+            c1 = download(loop, "./data/torrent files/lorem.txt.torrent", 6881, dir1)
 
         # Second instance of PyTo (leecher)
         dir2 = mkdtemp()
         with unittest.mock.patch.object(Torrent, 'get_peers') as get_peers_mocked:
             get_peers_mocked.return_value = [("127.0.0.1", 6881)]
-            c2 = download(loop, "./data/torrent files/lorem.txt.torrent",
-                               6882, dir2)
+            c2 = download(loop, "./data/torrent files/lorem.txt.torrent", 6882, dir2)
 
         loop.run_until_complete(asyncio.gather(*(c1 + c2)))
 

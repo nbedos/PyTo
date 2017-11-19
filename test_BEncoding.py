@@ -91,9 +91,8 @@ class TestBencode(TestCase):
 class TestTorrent(TestCase):
     def test_torrent_idempotence(self):
         # Decode whole Torrent files
-        os.chdir("./data/Torrent files/")
-        for file in os.listdir():
-            filename = os.fsdecode(file)
+        for file in os.listdir("./data/Torrent files/"):
+            filename = os.path.join("./data/Torrent files/", os.fsdecode(file))
             with open(filename, "rb") as f:
                 with self.subTest(filename=filename):
                     s = f.read()

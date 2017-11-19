@@ -41,7 +41,7 @@ class TestMessageReading(TestCase):
         writer = Mock()
         writer.get_extra_info = MagicMock(return_value=("127.0.0.1", 9000))
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.new_event_loop()
 
         p = Peer(reader, writer)
         result = loop.run_until_complete(read_all(p))

@@ -10,7 +10,7 @@ from unittest import TestCase
 from Torrent import *
 
 
-@unittest.skip("For now this test never ends")
+#@unittest.skip("For now this test never ends")
 class TestTorrentMethods(TestCase):
     def test_request_new_block(self, block_length: int=16384, piece_length: int=16384*3+1):
         q, r = divmod(piece_length, block_length)
@@ -29,18 +29,23 @@ class TestTorrentMethods(TestCase):
             self.assertEqual(t.request_new_block(peer_pieces), None)
 
         with self.subTest(case="Peer has all the pieces"):
+            """Check that the function requests all the necessary blocks."""
             t = Torrent("", "", b"", [], piece_length, torrent_length)
             peer_pieces = set(range(0, t.nbr_pieces))
             requested_blocks = set([])
-            req = t.request_new_block(peer_pieces, block_length)
-            while req is not None:
-                # Record all the block requested
-                requested_blocks.add((req.piece_index, req.block_offset))
-                req = t.request_new_block(peer_pieces, block_length)
             missing_blocks = set().union(*[
                 [(i, b * block_length) for i in range(0, t.nbr_pieces)]
                 for b in range(0, blocks_per_piece)
             ])
+            req = t.request_new_block(peer_pieces, block_length)
+            while req is not None:
+                # Record all the block requested
+                requested_blocks.add((req.piece_index, req.block_offset))
+                # Break out of the loop here once we've requested each block once
+                if requested_blocks == missing_blocks:
+                    break
+                req = t.request_new_block(peer_pieces, block_length)
+
             self.assertEqual(requested_blocks, missing_blocks)
 
         with self.subTest(case="Peer has all the missing pieces"):
@@ -50,14 +55,19 @@ class TestTorrentMethods(TestCase):
             # The peer has pieces 1, 3, 5, 7...
             peer_pieces = set(range(1, t.nbr_pieces, 2))
             requested_blocks = set([])
-            req = t.request_new_block(peer_pieces)
-            while req is not None:
-                requested_blocks.add((req.piece_index, req.block_offset))
-                req = t.request_new_block(peer_pieces)
             missing_blocks = set().union(*[
                 [(i, b * block_length) for i in range(1, t.nbr_pieces, 2)]
                 for b in range(0, blocks_per_piece)
             ])
+            req = t.request_new_block(peer_pieces)
+            while req is not None:
+                t.pending[req.piece_index][req.block_offset] = (True, b"\x00")
+                requested_blocks.add((req.piece_index, req.block_offset))
+                # Break out of the loop here once we've requested each block once
+                if requested_blocks == missing_blocks:
+                    break
+                req = t.request_new_block(peer_pieces)
+
             self.assertEqual(requested_blocks, missing_blocks)
 
 
@@ -72,14 +82,13 @@ class TestLocalDownload(TestCase):
                    "%(message)s",
             datefmt="%H:%M:%S")
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.new_event_loop()
         #loop.set_debug(True)
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         loop.set_default_executor(executor)
 
         # First instance of PyTo (seeder)
         dir1 = mkdtemp()
-        print(dir1)
         copy("./data/files/lorem.txt", dir1)
         with unittest.mock.patch.object(Torrent, 'get_peers') as get_peers_mocked:
             get_peers_mocked.return_value = []

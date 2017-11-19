@@ -30,7 +30,10 @@ def bdecode_partial(s: bytes):
     if s[0:1] == b"i":
         try:
             number, remainder = s[1:].split(b"e", 1)
-            return int(number), remainder
+            # 1/ The first digit can't be zero unless the number is zero
+            # 2/ "i-0e" is invalid
+            if (s[1:2] != b"0" or int(number) == 0) and (s[1:2] != b"-" or int(number) < 0):
+                return int(number), remainder
         except ValueError:
             pass
         raise ValueError("Invalid Bencoded string (ill-formed integer)")

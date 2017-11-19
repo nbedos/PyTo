@@ -19,7 +19,6 @@ def AsyncMock(*args, **kwargs):
 async def read_all(peer):
     l = []
     async for m in peer.read():
-        print(m)
         l.append(m)
     return l
 

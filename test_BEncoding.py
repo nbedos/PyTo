@@ -4,8 +4,10 @@ import os
 
 validBEncodings = {
     # INTEGERS
+    b"i0e": 0,
     b"i24e": 24,
     b"i-24e": -24,
+    b"i9999999999999999e": 9999999999999999,
     # STRINGS
     b"4:spam": b"spam",
     # Empty string
@@ -26,6 +28,7 @@ validBEncodings = {
     # Keys of a dictionary must be sorted (byte order, not lexicogaphical order)
     b"d1:ai2e1:bi1ee": {b'b': 1, b'a': 2}
 }
+
 
 class TestBdecode(TestCase):
     def test_Bdecode_success(self):
@@ -58,6 +61,8 @@ class TestBdecode(TestCase):
             b"i1.2e",
             b"i1.0e",
             b"i1,0e",
+            b"i-0e",
+            b"i01e",
             # List with no terminating "e"
             b"li42ei43e"
         ]
@@ -79,13 +84,14 @@ class TestBencode(TestCase):
             1.0,
             # String instead of a bytestring
             "a",
-            # Dictionary keys must be strings
+            # Dictionary keys must be bytestrings
             {1: b"a", 2: b"b"},
+            {"b": b"a", "a": b"b"}
         ]
         for testCase in fail_cases:
             with self.subTest(testCase=testCase):
                 with self.assertRaises(ValueError, msg="case '{0}'".format(testCase)):
-                    print(bencode(testCase))
+                    bencode(testCase)
 
 
 class TestTorrent(TestCase):

@@ -10,7 +10,6 @@ from unittest import TestCase
 from Torrent import *
 
 
-#@unittest.skip("For now this test never ends")
 class TestTorrentMethods(TestCase):
     def test_request_new_block(self, block_length: int=16384, piece_length: int=16384*3+1):
         q, r = divmod(piece_length, block_length)

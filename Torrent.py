@@ -10,8 +10,8 @@ import logging
 import os
 
 from hashlib import sha1
-from struct import pack, unpack, iter_unpack, error as struct_error
-from typing import Iterator, Tuple, Union, List, Set, BinaryIO
+from struct import unpack, iter_unpack, error as struct_error
+from typing import Iterator, Tuple, Union, List, Set
 
 from BEncoding import bdecode, bencode
 from Messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, \
@@ -52,9 +52,9 @@ class Torrent:
         q, r = divmod(self.length, self.piece_length)
         self.nbr_pieces = q + int(bool(r))
         self.pieces = set([])
-        self.file: Union[None, BinaryIO] = None
+        self.file = None
 
-        self.blocks = {}
+        #self.blocks = {}
         self.peers = dict([])
         self.blacklist = dict([])
         self.pending = dict([])
@@ -90,14 +90,12 @@ class Torrent:
 
     def read_piece(self, piece_index: int) -> bytes:
         self.logger.debug("reading piece #{}".format(piece_index))
-        print("reading piece #{}".format(piece_index))
         offset = piece_index * self.piece_length
         self.file.seek(offset)
         return self.file.read(self.piece_length)
 
     def write_piece(self, piece_index: int, piece: bytes):
         self.logger.debug("writing piece #{}".format(piece_index))
-        print("writing piece #{}".format(piece_index))
         self.file.seek(piece_index * self.piece_length)
         self.file.write(piece)
 
@@ -221,11 +219,8 @@ class Torrent:
 
                 self.logger.debug("Hashing succeeded for piece #{}".format(message.piece_index))
                 loop = asyncio.get_event_loop()
-                _, _ = await asyncio.wait([
-                    loop.run_in_executor(None,
-                                         self.write_piece,
-                                         message.piece_index,
-                                         piece)
+                await asyncio.wait([
+                    loop.run_in_executor(None, self.write_piece, message.piece_index, piece)
                 ])
 
                 del self.pending[message.piece_index]

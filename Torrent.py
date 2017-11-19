@@ -11,7 +11,7 @@ import os
 
 from hashlib import sha1
 from struct import pack, unpack, iter_unpack, error as struct_error
-from typing import Iterator, Tuple, Union, List, Set
+from typing import Iterator, Tuple, Union, List, Set, BinaryIO
 
 from BEncoding import bdecode, bencode
 from Messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, \
@@ -52,7 +52,7 @@ class Torrent:
         q, r = divmod(self.length, self.piece_length)
         self.nbr_pieces = q + int(bool(r))
         self.pieces = set([])
-        self.file = None
+        self.file: Union[None, BinaryIO] = None
 
         self.blocks = {}
         self.peers = dict([])
@@ -310,28 +310,48 @@ async def handle_connection(torrent: Torrent, reader: asyncio.StreamReader,
     if p is not None:
         torrent.logger.debug("accepted incoming connection from {}:{}".format(p.ip, p.port))
         torrent.add_peer(p)
-        await p.exchange(torrent)
+        await p.exchange(torrent, False)
 
 
-async def wrapper(loop, torrent: Torrent, ip: str, port: int):
+async def start_peer(loop, torrent: Torrent, ip: str, port: int, end_when_complete: bool):
     p = await Peer.from_ip(loop, ip, port)
     if p is not None:
         torrent.add_peer(p)
-        await p.exchange(torrent, initiated=True)
+        await p.exchange(torrent, end_when_complete, initiated=True)
 
 
-def download(loop, torrent_file: str, listen_port: int, download_dir: str):
-    t = Torrent.from_file(torrent_file)
-    t.init_files(download_dir)
-    logging.debug(t)
-    peers = t.get_peers()
-    logging.debug(t.peers)
+async def download(loop, torrent_file: str, listen_port: int, download_dir: str,
+                   end_when_complete: bool=False):
+    torrent = Torrent.from_file(torrent_file)
+    torrent.init_files(download_dir)
+    logging.debug(torrent)
 
-    return [asyncio.start_server(lambda r, w: handle_connection(t, r, w),
-                                 host='localhost',
-                                 port=listen_port,
-                                 loop=loop)] + \
-           [wrapper(loop, t, ip, port) for ip, port in peers]
+    futures = [asyncio.ensure_future(
+        asyncio.start_server(lambda r, w: handle_connection(torrent, r, w),
+                             host='localhost',
+                             port=listen_port,
+                             loop=loop)
+    )]
+
+    if not torrent.is_complete():
+        for ip, port in torrent.get_peers():
+            futures.append(asyncio.ensure_future(start_peer(loop, torrent, ip, port, end_when_complete)))
+
+    server = None
+    while futures:
+        done, futures = await asyncio.wait(futures, return_when=asyncio.FIRST_COMPLETED)
+        for item in done:
+            if isinstance(item.result(), asyncio.AbstractServer):
+                server = item.result()
+                # if start_server succeeds it returns an instance of asyncio.AbstractServer which
+                # we can wait on
+                futures.add(server.wait_closed())
+
+        if end_when_complete and torrent.is_complete():
+            if server is not None:
+                server.close()
+
+    torrent.file.close()
 
 
 def _split(l: list, n: int) -> list:

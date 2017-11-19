@@ -13,6 +13,7 @@ from tempfile import mkdtemp
 
 from Torrent import download
 
+arch_torrent = "./data/Torrent files/archlinux-2017.11.01-x86_64.iso.Torrent"
 
 if __name__ == '__main__':
     logging.basicConfig(
@@ -30,8 +31,7 @@ if __name__ == '__main__':
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     loop.set_default_executor(executor)
 
-    c1 = download(loop, "./data/Torrent files/archlinux-2017.11.01-x86_64.iso.Torrent", 6881, dir)
+    loop.run_until_complete(download(loop, arch_torrent, 6881, dir, end_when_complete=True))
 
-    loop.run_until_complete(asyncio.gather(*c1))
     loop.close()
     rmtree(dir)

@@ -118,16 +118,23 @@ class Peer:
         elif isinstance(message, BitField):
             self.pieces = message.pieces
 
-    async def exchange(self, torrent, initiated=False):
+    async def exchange(self, torrent, end_when_complete: bool, initiated: bool=False):
         if initiated:
             self.write(HandShake(torrent.info_hash))
             self.write(BitField(torrent.pieces, torrent.nbr_pieces))
 
         async for message in self.read():
             self.handle_message(message)
-            messages = await torrent.handle_message(message, self.pieces, self.chokes_me, initiated)
-            for m in messages:
-                self.write(m)
+            try:
+                messages = await torrent.handle_message(message, self.pieces, self.chokes_me, initiated)
+                for m in messages:
+                    self.write(m)
+            except StopIteration:
+                pass
+
+            if end_when_complete and torrent.is_complete():
+                self.writer.close()
+                break
 
 
 if __name__ == '__main__':

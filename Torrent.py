@@ -21,6 +21,7 @@ from Peer import Peer
 
 module_logger = logging.getLogger(__name__)
 
+
 class TorrentAdapter(logging.LoggerAdapter):
     """Add the name of the Torrent to logger messages"""
     def process(self, msg, kwargs):
@@ -59,7 +60,6 @@ class Torrent:
         self.pending = dict([])
 
         self.logger = TorrentAdapter(module_logger, {'name': self.name})
-
 
     @classmethod
     def from_file(cls, torrent_file: str):
@@ -158,10 +158,10 @@ class Torrent:
             self.peers[(p.ip, p.port)] = p
 
     def is_complete(self):
-        return self.pieces == set(range(0,self.nbr_pieces))
+        return self.pieces == set(range(0, self.nbr_pieces))
 
-    async def handle_message(self, message: Message, peer_pieces: Set[int], initiated):
-        default_block_length = pow(2, 14)
+    async def handle_message(self, message: Message, peer_pieces: Set[int], peer_chokes: bool,
+                             initiated: bool):
         if isinstance(message, HandShake):
             if self.info_hash == message.info_hash:
                 if not initiated:
@@ -171,6 +171,8 @@ class Torrent:
                     ]
             else:
                 raise ValueError("Invalid HandShake message")
+        elif isinstance(message, Choke):
+            pass
         elif isinstance(message, Unchoke):
             r = self.request_new_block(peer_pieces)
             if r is not None:
@@ -180,9 +182,9 @@ class Torrent:
         elif isinstance(message, NotInterested):
             return [Choke()]
         elif isinstance(message, BitField):
-            # TODO : XXX we create a request be never send it!
-            #r = self.request_new_block(peer_pieces)
-            #if r is not None:
+            all_pieces = set(range(0, self.nbr_pieces))
+            requestable_pieces = (all_pieces - self.pieces) & message.pieces
+            if requestable_pieces:
                 return [Interested()]
         elif isinstance(message, Request):
             loop = asyncio.get_event_loop()
@@ -199,70 +201,78 @@ class Torrent:
                       block)
             ]
         elif isinstance(message, Piece):
-            if message.piece_index in self.pending:
+            try:
                 blocks = self.pending[message.piece_index]
-                requested, block = blocks[message.block_offset]
-                if requested:
-                    blocks[message.block_offset] = (True, message.block)
-                    missing_blocks = [(offset, requested) for offset, (requested, block) in
-                                      blocks.items() if not block]
-                    unrequested_blocks = [offset for offset, requested in missing_blocks if
-                                          not requested]
-                    if unrequested_blocks:
-                        offset = unrequested_blocks.pop()
-                        blocks[offset] = (True, b"")
-                        return [Request(message.piece_index, offset, default_block_length)]
-                    else:
-                        piece = b"".join([block for _, block in blocks.values()])
-                        if self.hashes[message.piece_index] == sha1(piece).digest():
-                            self.logger.debug("Hashing succeeded for piece #{}".format(
-                                message.piece_index))
-                            loop = asyncio.get_event_loop()
-                            done, not_done = await asyncio.wait([
-                                loop.run_in_executor(None,
-                                                     self.write_piece,
-                                                     message.piece_index,
-                                                     piece)
-                            ])
-                            del self.pending[message.piece_index]
-                            self.pieces.add(message.piece_index)
+                _, _ = blocks[message.block_offset]
+            except KeyError:
+                self.logger.error("Received unrequested piece #{} offset {})".format(
+                    message.piece_index, message.block_offset))
+                return []
 
-                            self.logger.debug("Update list of pieces: {}".format(self.pieces))
+            blocks[message.block_offset] = (True, message.block)
+            # Otherwise we may have all the blocks for this piece
+            if all([block for _, block in blocks.values()]):
+                piece = b"".join([block for _, block in blocks.values()])
+                if self.hashes[message.piece_index] != sha1(piece).digest():
+                    self.logger.error("Hashing failed for piece #{}".format(
+                        message.piece_index))
+                    del self.pending[message.piece_index]
+                    return []
 
-                            r = self.request_new_block(peer_pieces)
-                            if self.is_complete():
-                                print("Complete!")
-                            if r is not None:
-                                return [Have(message.piece_index), r]
-                            else:
-                                return [Have(message.piece_index)]
-                        else:
-                            self.logger.debug("Hashing failed for piece #{}".format(
-                                message.piece_index))
-                            del self.pending[message.piece_index]
+                self.logger.debug("Hashing succeeded for piece #{}".format(message.piece_index))
+                loop = asyncio.get_event_loop()
+                _, _ = await asyncio.wait([
+                    loop.run_in_executor(None,
+                                         self.write_piece,
+                                         message.piece_index,
+                                         piece)
+                ])
+
+                del self.pending[message.piece_index]
+                self.pieces.add(message.piece_index)
+
+                self.logger.debug("Update list of pieces: {}".format(self.pieces))
+
+                r = self.request_new_block(peer_pieces)
+                if r is not None:
+                    return [Have(message.piece_index), r]
                 else:
-                    pass
+                    self.logger.debug("No more blocks to request")
+                    return [Have(message.piece_index)]
+            else:
+                r = self.request_new_block(peer_pieces)
+                if r is not None:
+                    return [r]
         return []
 
     def request_new_block(self, peer_pieces: Set[int], block_length: int=16384) -> Union[Request,
                                                                                          None]:
         """Build a Request message for a new block.
 
-        The block must :
-            - be missing
+        If possible, return Request for a block which
+            - is missing
             - belong to a piece owned by the peer
-            - not be pending"""
+            - has not already been requested
+        Otherwise return a Request for a block which has been requested but has not been received
+        yet"""
         all_pieces = set(range(0, self.nbr_pieces))
 
         # Make a blacklist of the pieces which have all their blocks pending
         blacklist = set([p for p in self.pending.keys() if self.pending[p] and
                          all([requested for (requested, _) in self.pending[p].values()])])
 
+        # Look for a missing block owned by the peer and not yet requested
         requestable_pieces = (all_pieces - self.pieces - blacklist) & peer_pieces
         try:
             piece_index = requestable_pieces.pop()
         except KeyError:
-            return None
+            # Otherwise, look for a missing block owned by the peer which may have already been
+            # requested
+            requestable_pieces = (all_pieces - self.pieces) & peer_pieces
+            try:
+                piece_index = requestable_pieces.pop()
+            except KeyError:
+                return None
 
         if piece_index == self.nbr_pieces - 1:
             # The last piece may be shorter than all the others
@@ -272,8 +282,13 @@ class Torrent:
 
         # If the piece is pending, pick the first non requested block
         if piece_index in self.pending:
-            not_requested = (offset for offset, (requested, _) in
-                             self.pending[piece_index].items() if not requested)
+            # Sort the pending blocks to get
+            #   - First the non requested block (False, ...)
+            #   - Then blocks we requested but have not received (True, b"")
+            #   - Then blocks we've already downloaded (True, b"data...")
+            sorted_blocks = sorted(self.pending[piece_index].items(), key=lambda x: x[1])
+            not_requested = (offset for offset, (requested, b) in sorted_blocks if not requested
+                             or not b)
             block_offset = next(not_requested)
         # If no block of this piece has been requested, pick the first one and initialize the
         # block list
@@ -289,7 +304,8 @@ class Torrent:
         return Request(piece_index, block_offset, block_length)
 
 
-async def handle_connection(torrent: Torrent, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+async def handle_connection(torrent: Torrent, reader: asyncio.StreamReader,
+                            writer: asyncio.StreamWriter):
     p = Peer(reader, writer)
     if p is not None:
         torrent.logger.debug("accepted incoming connection from {}:{}".format(p.ip, p.port))

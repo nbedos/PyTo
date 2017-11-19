@@ -71,6 +71,7 @@ class TestLocalDownload(TestCase):
             format="[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d]@%(threadName)s "
                    "%(message)s",
             datefmt="%H:%M:%S")
+
         loop = asyncio.get_event_loop()
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         loop.set_default_executor(executor)
@@ -94,4 +95,3 @@ class TestLocalDownload(TestCase):
         loop.close()
         rmtree(dir1)
         rmtree(dir2)
-

@@ -17,9 +17,12 @@ from Torrent import download
 if __name__ == '__main__':
     logging.basicConfig(
         level=logging.DEBUG,
-        format="[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d]@%(threadName)s "
+        format="[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d] "
                "%(message)s",
-        datefmt="%H:%M:%S")
+        datefmt="%H:%M:%S",
+        filename="PyTo.log",
+        filemode='w')
+    logging.getLogger().addHandler(logging.StreamHandler())
 
     dir = mkdtemp()
 

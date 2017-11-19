@@ -81,7 +81,7 @@ class Peer:
                     self.close()
                     break
 
-            if self.reader.at_eof():
+            if self.reader is not None and self.reader.at_eof():
                 self.close()
                 break
 
@@ -125,7 +125,7 @@ class Peer:
 
         async for message in self.read():
             self.handle_message(message)
-            messages = await torrent.handle_message(message, self.pieces, initiated)
+            messages = await torrent.handle_message(message, self.pieces, self.chokes_me, initiated)
             for m in messages:
                 self.write(m)
 

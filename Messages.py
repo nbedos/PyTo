@@ -322,6 +322,11 @@ class Piece(Message):
         self.block_offset = block_offset
         self.block = block
 
+    def __repr__(self):
+        attributes = self.__dict__.copy()
+        attributes["block"] = attributes["block"][0:20] + b" (truncated)"
+        return "{0}: {1}".format(self.__class__, sorted(attributes.items()))
+
     def to_bytes(self) -> bytes:
         try:
             return pack(">IBII{}s".format(self.block_length),

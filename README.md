@@ -21,14 +21,14 @@ My main goal is to learn more about Python 3, be it:
 
 Functionalities:
 
- * **[implemented]** Parsing a Torrent file (single file mode)
- * **[implemented]** Querying the tracker to get a list of peers
- * **[implemented]** Connecting to peers and parsing their messages
- * **[implemented]** Checking on disk if the file has already been partially downloaded when creating a Torrent instance
- * **[implemented]** Handling spontaneous connections from peers
+ * **[Done]** Parsing a Torrent file (single file mode)
+ * **[Done]** Querying the tracker to get a list of peers
+ * **[Done]** Connecting to peers and parsing their messages
+ * **[Done]** Checking on disk if the file has already been partially downloaded when creating a Torrent instance
+ * **[Done]** Handling spontaneous connections from peers
+ * **[Done]** Having the client download from other instances of itself for testing
+ * **[Done]** Download a whole file from the Internet (500 MB ISO downloaded at 2 MB/s)
  * **[in progress]** Exchanging file pieces with peers
- * **[in progress]** Having the client download from other instances of itself for testing
- * **[to be done]** Download a whole file from the Internet
  * **[to be done]** Handling Torrent with multiple files
  * **[to be done]** Starting downloads from a magnet link
  * **[to be done]** ...

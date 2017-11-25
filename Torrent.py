@@ -107,6 +107,8 @@ class Torrent:
         try:
             f = open(torrent_file, "rb")
             if os.stat(torrent_file).st_size != self.length:
+                print(os.stat(torrent_file).st_size, self.length)
+
                 raise ValueError("The file size does not match with the torrent size")
             pieces = iter(lambda: f.read(self.piece_length), b"")
             for piece_index, piece in enumerate(pieces):

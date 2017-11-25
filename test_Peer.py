@@ -1,4 +1,4 @@
-from unittest import TestCase
+import unittest
 from unittest.mock import MagicMock, Mock
 
 import asyncio
@@ -23,7 +23,7 @@ async def read_all(peer):
     return l
 
 
-class TestMessageReading(TestCase):
+class TestMessageReading(unittest.TestCase):
     def test_read(self):
         """Test the read() method of the Peer class
 
@@ -50,9 +50,5 @@ class TestMessageReading(TestCase):
             with self.subTest(case=bytes[i], expected=message, result=result[i]):
                 self.assertEqual(result[i], message)
 
-
-
-
-
-
-
+if __name__ == '__main__':
+        unittest.main()

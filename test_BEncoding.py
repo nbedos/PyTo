@@ -1,4 +1,4 @@
-from unittest import TestCase
+import unittest
 from BEncoding import bdecode, bencode
 import os
 
@@ -30,7 +30,7 @@ validBEncodings = {
 }
 
 
-class TestBdecode(TestCase):
+class TestBdecode(unittest.TestCase):
     def test_Bdecode_success(self):
         for (key, value) in validBEncodings.items():
             with self.subTest(case=key, expected=value, result=bdecode(key)):
@@ -72,7 +72,7 @@ class TestBdecode(TestCase):
                     print(bdecode(testCase))
 
 
-class TestBencode(TestCase):
+class TestBencode(unittest.TestCase):
     def test_Bencode_success(self):
         for (key, value) in validBEncodings.items():
             with self.subTest(case=value, expected=key, result=bencode(value)):
@@ -94,12 +94,15 @@ class TestBencode(TestCase):
                     bencode(testCase)
 
 
-class TestTorrent(TestCase):
+class TestTorrent(unittest.TestCase):
     def test_torrent_idempotence(self):
         # Decode whole Torrent files
-        for file in os.listdir("./data/Torrent files/"):
-            filename = os.path.join("./data/Torrent files/", os.fsdecode(file))
+        for file in os.listdir("./data/torrent files/"):
+            filename = os.path.join("./data/torrent files/", os.fsdecode(file))
             with open(filename, "rb") as f:
                 with self.subTest(filename=filename):
                     s = f.read()
                     self.assertEqual(s, bencode(bdecode(s)))
+
+if __name__ == '__main__':
+        unittest.main()

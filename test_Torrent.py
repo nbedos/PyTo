@@ -2,15 +2,15 @@ import unittest.mock
 import asyncio
 import logging
 import concurrent.futures
+import unittest
 
 from shutil import copy, rmtree
 from tempfile import mkdtemp
-from unittest import TestCase
 
 from Torrent import *
 
 
-class TestTorrentMethods(TestCase):
+class TestTorrentMethods(unittest.TestCase):
     def test_request_new_block(self, block_length: int=16384, piece_length: int=16384*3+1):
         q, r = divmod(piece_length, block_length)
         blocks_per_piece = q + int(bool(r))
@@ -70,10 +70,11 @@ class TestTorrentMethods(TestCase):
             self.assertEqual(requested_blocks, missing_blocks)
 
 
-class TestLocalDownload(TestCase):
+class TestLocalDownload(unittest.TestCase):
     """Test PyTo on the loopback interface.
 
     The Torrent.get_peers method is mocked to avoid using a tracker"""
+    @unittest.skip("Needs to we written with one process or thread by PyTo instance")
     def test_2_instances(self):
         logging.basicConfig(
             level=logging.DEBUG,
@@ -104,3 +105,8 @@ class TestLocalDownload(TestCase):
         loop.close()
         #rmtree(dir1)
         #rmtree(dir2)
+
+
+if __name__ == '__main__':
+        unittest.main()
+

@@ -1,4 +1,4 @@
-from unittest import TestCase
+import unittest
 from Messages import *
 
 
@@ -20,7 +20,7 @@ validMessages = {
 }
 
 
-class TestMessageFromBytes(TestCase):
+class TestMessageFromBytes(unittest.TestCase):
     def test_from_bytes_success(self):
         for (key, value) in validMessages.items():
             with self.subTest(case=key, expected=value):
@@ -40,8 +40,11 @@ class TestMessageFromBytes(TestCase):
                     print(Message.from_bytes(testCase))
 
 
-class TestMessageToBytes(TestCase):
+class TestMessageToBytes(unittest.TestCase):
     def test_to_bytes_success(self):
         for (key, value) in validMessages.items():
             with self.subTest(case=value, expected=key):
                 self.assertEqual(value.to_bytes(), key)
+
+if __name__ == '__main__':
+        unittest.main()

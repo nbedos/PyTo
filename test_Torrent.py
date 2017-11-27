@@ -2,15 +2,17 @@ import unittest.mock
 import asyncio
 import logging
 import concurrent.futures
-import unittest
 
 from shutil import copy, rmtree
 from tempfile import mkdtemp
+from time import sleep
+from unittest import TestCase
+import filecmp
 
 from Torrent import *
 
 
-class TestTorrentMethods(unittest.TestCase):
+class TestTorrentMethods(TestCase):
     def test_request_new_block(self, block_length: int=16384, piece_length: int=16384*3+1):
         q, r = divmod(piece_length, block_length)
         blocks_per_piece = q + int(bool(r))
@@ -70,11 +72,11 @@ class TestTorrentMethods(unittest.TestCase):
             self.assertEqual(requested_blocks, missing_blocks)
 
 
-class TestLocalDownload(unittest.TestCase):
+
+class TestLocalDownload(TestCase):
     """Test PyTo on the loopback interface.
 
     The Torrent.get_peers method is mocked to avoid using a tracker"""
-    @unittest.skip("Needs to we written with one process or thread by PyTo instance")
     def test_2_instances(self):
         logging.basicConfig(
             level=logging.DEBUG,
@@ -87,26 +89,42 @@ class TestLocalDownload(unittest.TestCase):
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         loop.set_default_executor(executor)
 
-        # First instance of PyTo (seeder)
         dir1 = mkdtemp()
-        copy("./data/files/lorem.txt", dir1)
-        with unittest.mock.patch.object(Torrent, 'get_peers') as get_peers_mocked:
-            get_peers_mocked.return_value = []
-            c1 = download(loop, "./data/torrent files/lorem.txt.torrent", 6881, dir1)
-            loop.create_task(c1)
+        dir2 = mkdtemp()
 
-            # Second instance of PyTo (leecher)
-            dir2 = mkdtemp()
-            get_peers_mocked.return_value = [("127.0.0.1", 6881)]
-            c2 = download(loop, "./data/torrent files/lorem.txt.torrent", 6882, dir2, True)
-            loop.run_until_complete(c2)
+        async def hypervisor(loop):
+            # Setup a directory and files for the seeder
+            copy("./data/files/lorem.txt", dir1)
+            with unittest.mock.patch.object(Torrent, 'get_peers') as get_peers_mocked:
+                get_peers_mocked.return_value = []
+                t1 = init("./data/torrent files/lorem.txt.torrent", dir1)
+                # Start the seeder
+                loop.create_task(download(loop, t1, 6881))
+
+                # Wait until the seeder is ready to accept incoming connections
+                item = await t1.queue.get()
+                if item == "EVENT_ACCEPT_CONNECTIONS":
+                    # Setup a directory and files for the leecher
+                    get_peers_mocked.return_value = [("127.0.0.1", 6881)]
+                    t2 = init("./data/torrent files/lorem.txt.torrent", dir2)
+                    # Start the leecher
+                    futures = [asyncio.ensure_future(download(loop, t2, 6882, True), loop=loop)]
+                    await asyncio.wait(futures)
+                # Stop the seeder once the leecher has returned
+                await stop(t1, loop)
+
+        loop.run_until_complete(asyncio.ensure_future(hypervisor(loop),loop=loop))
 
         loop.stop()
         loop.close()
+
+        f1 = os.path.join(dir1, "lorem.txt")
+        f2 = os.path.join(dir2, "lorem.txt")
+        
+        self.assertEqual(filecmp.cmp(f1,f2,False),True)
+
         #rmtree(dir1)
         #rmtree(dir2)
 
-
 if __name__ == '__main__':
         unittest.main()
-

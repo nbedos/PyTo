@@ -3,11 +3,12 @@ Torrent module
 
 An instance of the Torrent class represents a Torrent file
 """
-import urllib.request
-import urllib.parse
 import asyncio
+import json
 import logging
 import os
+import urllib.parse
+import urllib.request
 
 from hashlib import sha1
 from struct import unpack, iter_unpack, error as struct_error
@@ -60,6 +61,11 @@ class Torrent:
         self.pending = dict([])
 
         self.logger = TorrentAdapter(module_logger, {'name': self.name})
+
+        self.futures = {}
+        self.server = None
+
+        self.queue = asyncio.Queue(50)
 
     @classmethod
     def from_file(cls, torrent_file: str):
@@ -301,13 +307,15 @@ class Torrent:
         return Request(piece_index, block_offset, block_length)
 
 
-async def handle_connection(torrent: Torrent, reader: asyncio.StreamReader,
+
+def handle_connection(torrent: Torrent, reader: asyncio.StreamReader,
                             writer: asyncio.StreamWriter):
     p = Peer(reader, writer)
     if p is not None:
         torrent.logger.debug("accepted incoming connection from {}:{}".format(p.ip, p.port))
+        f = asyncio.ensure_future(p.exchange(torrent, False))
         torrent.add_peer(p)
-        await p.exchange(torrent, False)
+        torrent.future[f] = True
 
 
 async def start_peer(loop, torrent: Torrent, ip: str, port: int, end_when_complete: bool):
@@ -316,40 +324,62 @@ async def start_peer(loop, torrent: Torrent, ip: str, port: int, end_when_comple
         torrent.add_peer(p)
         await p.exchange(torrent, end_when_complete, initiated=True)
 
+async def stop(torrent, loop):
+    if torrent.file:
+        torrent.file.close()
 
-async def download(loop, torrent_file: str, listen_port: int, download_dir: str,
-                   end_when_complete: bool=False):
+    if torrent.server:
+        print('closing server')
+        torrent.server.close()
+        await asyncio.wait([asyncio.ensure_future(torrent.server.wait_closed())])
+
+    for f, cancellable in torrent.futures.items():
+        if cancellable:
+            print('canceling future ', f)
+            f.cancel()
+
+def init(torrent_file: str, download_dir: str):
     torrent = Torrent.from_file(torrent_file)
     torrent.init_files(download_dir)
     logging.debug(torrent)
+    return torrent
 
-    futures = [asyncio.ensure_future(
+async def download(loop, torrent, listen_port: int, end_when_complete: bool=False):
+    # start_server will set up a server listening on the given port and return
+    # as soon as it is done. The value returned is an AbstractServer instance.
+    # Then, handle_connection will be called to handle every incoming
+    # connection.
+    f = asyncio.ensure_future(
         asyncio.start_server(lambda r, w: handle_connection(torrent, r, w),
                              host='localhost',
                              port=listen_port,
                              loop=loop)
-    )]
+    )
+    torrent.futures[f] = True
 
     if not torrent.is_complete():
         for ip, port in torrent.get_peers():
-            futures.append(asyncio.ensure_future(start_peer(loop, torrent, ip, port, end_when_complete)))
+            f = asyncio.ensure_future(start_peer(loop, torrent, ip, port, end_when_complete))
+            torrent.futures[f] = True
 
-    server = None
-    while futures:
-        done, futures = await asyncio.wait(futures, return_when=asyncio.FIRST_COMPLETED)
+    while torrent.futures:
+        done, futures = await asyncio.wait(torrent.futures.keys(), return_when=asyncio.FIRST_COMPLETED)
+
         for item in done:
             if isinstance(item.result(), asyncio.AbstractServer):
-                server = item.result()
-                # if start_server succeeds it returns an instance of asyncio.AbstractServer which
-                # we can wait on
-                futures.add(server.wait_closed())
+                torrent.server = item.result()
+                f = asyncio.ensure_future(torrent.server.wait_closed())
+                torrent.futures[f] = False
+                try:
+                    torrent.queue.put_nowait("EVENT_ACCEPT_CONNECTIONS")
+                except asyncio.Queuefull:
+                    torrent.warning("Queue full, could not write event")
+            del torrent.futures[item]
 
         if end_when_complete and torrent.is_complete():
-            if server is not None:
-                server.close()
+            await stop(torrent, loop)
 
     torrent.file.close()
-
 
 def _split(l: list, n: int) -> list:
     """Split the list l in chunks of size n"""

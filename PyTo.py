@@ -12,7 +12,7 @@ from shutil import rmtree
 from tempfile import mkdtemp, gettempdir
 from os.path import join
 
-from Torrent import download, init
+from Torrent import *
 
 arch_torrent = "./data/torrent files/archlinux-2017.11.01-x86_64.iso.torrent"
 
@@ -28,14 +28,24 @@ if __name__ == '__main__':
     logging.getLogger().addHandler(logging.StreamHandler())
     logging.info("Logging to {}".format(logfile))
 
-    dir = mkdtemp()
-
     loop = asyncio.get_event_loop()
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     loop.set_default_executor(executor)
 
-    t = init(arch_torrent, dir)
-    loop.run_until_complete(download(loop, t, 6881, end_when_complete=True))
+    async def hypervisor(loop):
+        dir = mkdtemp()
 
+        t = init(arch_torrent, dir)
+        f = asyncio.ensure_future(download(loop, t, 6881))
+
+        item = ""
+        while item != "EVENT_DOWNLOAD_COMPLETE":
+            item = await t.queue.get()
+
+        stop(t, loop)
+        await f
+
+    loop.run_until_complete(hypervisor(loop))
+
+    loop.stop()
     loop.close()
-    rmtree(dir)

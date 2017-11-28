@@ -96,25 +96,40 @@ class TestLocalDownload(TestCase):
             # Setup a directory and files for the seeder
             copy("./data/files/lorem.txt", dir1)
             with unittest.mock.patch.object(Torrent, 'get_peers') as get_peers_mocked:
+                # Mock Torrent.get_peers to return an empty list
                 get_peers_mocked.return_value = []
                 t1 = init("./data/torrent files/lorem.txt.torrent", dir1)
                 # Start the seeder
-                loop.create_task(download(loop, t1, 6881))
+                f1 = asyncio.ensure_future(download(loop, t1, 6881))
 
                 # Wait until the seeder is ready to accept incoming connections
-                item = await t1.queue.get()
-                if item == "EVENT_ACCEPT_CONNECTIONS":
-                    # Setup a directory and files for the leecher
-                    get_peers_mocked.return_value = [("127.0.0.1", 6881)]
-                    t2 = init("./data/torrent files/lorem.txt.torrent", dir2)
-                    # Start the leecher
-                    futures = [asyncio.ensure_future(download(loop, t2, 6882, True), loop=loop)]
-                    await asyncio.wait(futures)
-                # Stop the seeder once the leecher has returned
-                await stop(t1, loop)
+                item = ""
+                while item != "EVENT_ACCEPT_CONNECTIONS":
+                    item = await t1.queue.get()
+
+                # Mock Torrent.get_peers to return the adress of the seeder
+                get_peers_mocked.return_value = [("127.0.0.1", 6881)]
+                # Setup a directory and files for the leecher
+                t2 = init("./data/torrent files/lorem.txt.torrent", dir2)
+
+                # Start the leecher
+                f2 = asyncio.ensure_future(download(loop, t2, 6882), loop=loop)
+
+                # Wait for the download to complete
+                item = ""
+                while item != "EVENT_DOWNLOAD_COMPLETE":
+                    item = await t2.queue.get()
+
+                stop(t2, loop)
+                stop(t1, loop)
+
+                # Wait for download()s to return
+                await asyncio.gather(*[f1, f2])
+
 
         loop.run_until_complete(asyncio.ensure_future(hypervisor(loop),loop=loop))
 
+        print('stopping loop')
         loop.stop()
         loop.close()
 
@@ -123,8 +138,8 @@ class TestLocalDownload(TestCase):
         
         self.assertEqual(filecmp.cmp(f1,f2,False),True)
 
-        #rmtree(dir1)
-        #rmtree(dir2)
+        rmtree(dir1)
+        rmtree(dir2)
 
 if __name__ == '__main__':
         unittest.main()

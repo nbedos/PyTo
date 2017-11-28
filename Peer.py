@@ -118,7 +118,8 @@ class Peer:
         elif isinstance(message, BitField):
             self.pieces = message.pieces
 
-    async def exchange(self, torrent, end_when_complete: bool, initiated: bool=False):
+    # TODO: Cleanly end connection when the task is cancelled
+    async def exchange(self, torrent, initiated: bool=False):
         if initiated:
             self.write(HandShake(torrent.info_hash))
             self.write(BitField(torrent.pieces, torrent.nbr_pieces))
@@ -131,10 +132,6 @@ class Peer:
                     self.write(m)
             except StopIteration:
                 pass
-
-            if end_when_complete and torrent.is_complete():
-                self.writer.close()
-                break
 
 
 if __name__ == '__main__':

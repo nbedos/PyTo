@@ -38,6 +38,9 @@ class Peer:
         self.pieces = set([])
         self.handshake_done = False
 
+        self.pending_requests = 0
+        self.pending_target = 30
+
         self.logger = PeerAdapter(module_logger, {'ip': self.ip, 'port': self.port})
 
     def __repr__(self) -> str:
@@ -117,6 +120,8 @@ class Peer:
             self.pieces.add(message.piece_index)
         elif isinstance(message, BitField):
             self.pieces = message.pieces
+        elif isinstance(message, Piece):
+            self.pending_requests -= 1
 
     # TODO: Cleanly end connection when the task is cancelled
     async def exchange(self, torrent, initiated: bool=False):
@@ -126,12 +131,21 @@ class Peer:
 
         async for message in self.read():
             self.handle_message(message)
-            try:
-                messages = await torrent.handle_message(message, self.pieces, self.chokes_me, initiated)
-                for m in messages:
-                    self.write(m)
-            except StopIteration:
-                pass
+            messages = await torrent.handle_message(message, self.pieces, self.chokes_me, initiated)
+            messages += request_blocks(self, torrent)
+            for m in messages:
+                self.write(m)
+
+
+def request_blocks(peer: Peer, torrent):
+    l = []
+    if not peer.chokes_me:
+        for _ in range(peer.pending_requests, peer.pending_target, 1):
+            r = torrent.request_new_block(peer.pieces)
+            if r is not None:
+                l.append(r)
+        peer.pending_requests += len(l)
+    return l
 
 
 if __name__ == '__main__':

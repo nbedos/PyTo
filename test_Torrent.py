@@ -124,10 +124,14 @@ class TestLocalDownload(TestCase):
                 stop(t1, loop)
 
                 # Wait for download()s to return
-                await asyncio.gather(*[f1, f2])
+                try:
+                    await asyncio.gather(*[f1, f2])
+                except asyncio.CancelledError:
+                    pass
 
 
         loop.run_until_complete(asyncio.ensure_future(hypervisor(loop),loop=loop))
+
 
         print('stopping loop')
         loop.stop()
@@ -136,7 +140,7 @@ class TestLocalDownload(TestCase):
         f1 = os.path.join(dir1, "lorem.txt")
         f2 = os.path.join(dir2, "lorem.txt")
         
-        self.assertEqual(filecmp.cmp(f1,f2,False),True)
+        self.assertEqual(filecmp.cmp(f1, f2, False), True)
 
         rmtree(dir1)
         rmtree(dir2)

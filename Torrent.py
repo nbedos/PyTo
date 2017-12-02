@@ -188,8 +188,8 @@ class Torrent:
         elif isinstance(message, NotInterested):
             return [Choke()]
         elif isinstance(message, BitField):
-            all_pieces = set(range(0, self.nbr_pieces))
-            requestable_pieces = (all_pieces - self.pieces) & message.pieces
+            requestable_pieces = (self.pieces ^ message.pieces) & message.pieces
+            print('requestable_pieces=', requestable_pieces)
             if requestable_pieces:
                 return [Interested()]
         elif isinstance(message, Request):
@@ -209,10 +209,14 @@ class Torrent:
         elif isinstance(message, Piece):
             try:
                 blocks = self.pending[message.piece_index]
-                _, _ = blocks[message.block_offset]
+                _, b = blocks[message.block_offset]
             except KeyError:
                 self.logger.error("Received unrequested piece #{} offset {})".format(
                     message.piece_index, message.block_offset))
+                return []
+
+            # Block already received
+            if b:
                 return []
 
             blocks[message.block_offset] = (True, message.block)
@@ -227,29 +231,25 @@ class Torrent:
 
                 self.logger.debug("Hashing succeeded for piece #{}".format(message.piece_index))
                 loop = asyncio.get_event_loop()
-                await asyncio.wait([
-                    loop.run_in_executor(None, self.write_piece, message.piece_index, piece)
-                ])
 
                 del self.pending[message.piece_index]
                 self.pieces.add(message.piece_index)
 
                 self.logger.debug("Update list of pieces: {}".format(self.pieces))
 
-                r = self.request_new_block(peer_pieces)
-                if r is not None:
-                    return [Have(message.piece_index), r]
-                else:
+                await asyncio.wait([
+                    loop.run_in_executor(None, self.write_piece, message.piece_index, piece)
+                ])
+
+                if self.is_complete():
                     self.logger.debug("No more blocks to request")
                     try:
                         self.queue.put_nowait("EVENT_DOWNLOAD_COMPLETE")
                     except asyncio.QueueFull:
                         self.logger.warning("Queue full, could not write event")
                     return [Have(message.piece_index)]
-            else:
-                r = self.request_new_block(peer_pieces)
-                if r is not None:
-                    return [r]
+
+                return [Have(message.piece_index)]
         return []
 
     def request_new_block(self, peer_pieces: Set[int], block_length: int=16384) -> Union[Request,
@@ -262,20 +262,18 @@ class Torrent:
             - has not already been requested
         Otherwise return a Request for a block which has been requested but has not been received
         yet"""
-        all_pieces = set(range(0, self.nbr_pieces))
-
         # Make a blacklist of the pieces which have all their blocks pending
         blacklist = set([p for p in self.pending.keys() if self.pending[p] and
                          all([requested for (requested, _) in self.pending[p].values()])])
 
         # Look for a missing block owned by the peer and not yet requested
-        requestable_pieces = (all_pieces - self.pieces - blacklist) & peer_pieces
+        requestable_pieces = (self.pieces ^ peer_pieces) & (peer_pieces - blacklist)
         try:
             piece_index = requestable_pieces.pop()
         except KeyError:
             # Otherwise, look for a missing block owned by the peer which may have already been
             # requested
-            requestable_pieces = (all_pieces - self.pieces) & peer_pieces
+            requestable_pieces = (self.pieces ^ peer_pieces) & peer_pieces
             try:
                 piece_index = requestable_pieces.pop()
             except KeyError:
@@ -311,9 +309,7 @@ class Torrent:
         return Request(piece_index, block_offset, block_length)
 
 
-
-def handle_connection(torrent: Torrent, reader: asyncio.StreamReader,
-                            writer: asyncio.StreamWriter):
+def handle_connection(torrent: Torrent, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     p = Peer(reader, writer)
     if p is not None:
         torrent.logger.debug("accepted incoming connection from {}:{}".format(p.ip, p.port))
@@ -329,17 +325,21 @@ async def start_peer(loop, torrent: Torrent, ip: str, port: int):
         torrent.add_peer(p)
         await p.exchange(torrent, initiated=True)
 
+
 def stop(torrent, loop):
-    if torrent.file:
-        torrent.file.close()
+    if torrent.server:
+        print('closing server')
+        torrent.server.close()
 
     for peer in torrent.peers.values():
         if peer.writer:
             peer.writer.close()
 
-    if torrent.server:
-        print('closing server')
-        torrent.server.close()
+    for f in torrent.futures:
+        f.cancel()
+
+    if torrent.file:
+        torrent.file.close()
 
 
 def init(torrent_file: str, download_dir: str):
@@ -347,6 +347,7 @@ def init(torrent_file: str, download_dir: str):
     torrent.init_files(download_dir)
     logging.debug(torrent)
     return torrent
+
 
 async def download(loop, torrent, listen_port: int):
     # start_server will set up a server listening on the given port and return
@@ -361,10 +362,9 @@ async def download(loop, torrent, listen_port: int):
     )
     torrent.futures[f] = True
 
-    if not torrent.is_complete():
-        for ip, port in torrent.get_peers():
-            f = asyncio.ensure_future(start_peer(loop, torrent, ip, port))
-            torrent.futures[f] = True
+    for ip, port in torrent.get_peers():
+        f = asyncio.ensure_future(start_peer(loop, torrent, ip, port))
+        torrent.futures[f] = True
 
     while torrent.futures:
         print(torrent.futures)
@@ -385,6 +385,7 @@ async def download(loop, torrent, listen_port: int):
             del torrent.futures[item]
 
     torrent.file.close()
+
 
 def _split(l: list, n: int) -> list:
     """Split the list l in chunks of size n"""

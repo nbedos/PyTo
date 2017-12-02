@@ -16,7 +16,7 @@ from Torrent import *
 
 arch_torrent = "./data/torrent files/archlinux-2017.11.01-x86_64.iso.torrent"
 
-if __name__ == '__main__':
+def main():
     logfile = join(gettempdir(), "PyTo.log")
     logging.basicConfig(
         level=logging.DEBUG,
@@ -29,6 +29,7 @@ if __name__ == '__main__':
     logging.info("Logging to {}".format(logfile))
 
     loop = asyncio.get_event_loop()
+    loop.set_debug(True)
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     loop.set_default_executor(executor)
 
@@ -43,9 +44,16 @@ if __name__ == '__main__':
             item = await t.queue.get()
 
         stop(t, loop)
-        await f
+        try:
+            await f
+        except asyncio.CancelledError:
+            pass
 
     loop.run_until_complete(hypervisor(loop))
 
     loop.stop()
     loop.close()
+
+
+if __name__ == '__main__':
+    main()

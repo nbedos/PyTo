@@ -42,13 +42,15 @@ class TestMessageReading(unittest.TestCase):
 
         loop = asyncio.new_event_loop()
 
-        p = Peer(reader, writer)
+        p = Peer()
+        p.connect(loop, reader=reader, writer=writer)
         result = loop.run_until_complete(read_all(p))
         loop.close()
 
         for i, message in enumerate(messages):
             with self.subTest(case=bytes[i], expected=message, result=result[i]):
                 self.assertEqual(result[i], message)
+
 
 if __name__ == '__main__':
         unittest.main()

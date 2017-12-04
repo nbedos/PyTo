@@ -4,17 +4,15 @@ Main module for PyTo
 Executing this module launches the download of the last Archlinux installation file and is a good
 way to see PyTo working.
 """
-import asyncio
 import concurrent.futures
-import logging
-
-from shutil import rmtree
 from tempfile import mkdtemp, gettempdir
 from os.path import join
 
 from Torrent import *
 
-arch_torrent = "./data/torrent files/archlinux-2017.11.01-x86_64.iso.torrent"
+
+arch_torrent = "./data/torrent files/archlinux-2017.12.01-x86_64.iso.torrent"
+
 
 def main():
     logfile = join(gettempdir(), "PyTo.log")
@@ -43,11 +41,9 @@ def main():
         while item != "EVENT_DOWNLOAD_COMPLETE":
             item = await t.queue.get()
 
-        stop(t, loop)
-        try:
-            await f
-        except asyncio.CancelledError:
-            pass
+        t.stop()
+
+        await f
 
     loop.run_until_complete(hypervisor(loop))
 

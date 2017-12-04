@@ -4,17 +4,22 @@ Peer module
 An instance of the Peer class represents a member of the network
 """
 import asyncio
+import datetime
 import logging
 
 from Messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, \
                      BitField, Request, Piece, Cancel, Port, HandShake
 
-connectionErrors = (ConnectionRefusedError,
-                    ConnectionAbortedError,
-                    ConnectionError,
-                    ConnectionResetError,
-                    TimeoutError,
-                    OSError)
+from typing import List, Union
+PeerConnectErrors = (ConnectionRefusedError,
+                     ConnectionAbortedError,
+                     ConnectionError,
+                     ConnectionResetError,
+                     TimeoutError,
+                     OSError)
+
+PeerWriteErrors = (ConnectionResetError,)
+
 
 module_logger = logging.getLogger(__name__)
 
@@ -22,14 +27,16 @@ module_logger = logging.getLogger(__name__)
 class PeerAdapter(logging.LoggerAdapter):
     """Add the port and ip of the Peer to logger messages"""
     def process(self, msg, kwargs):
-        return '{:>15}:{:<5} {}'.format(self.extra['ip'], self.extra['port'], msg), kwargs
+        return msg, kwargs
+        #return '{:>15}:{:<5} {}'.format(self.extra['ip'], self.extra['port'], msg), kwargs
 
 
 class Peer:
-    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        self.reader = reader
-        self.writer = writer
-        self.ip, self.port = self.writer.get_extra_info('peername')
+    def __init__(self):
+        self.reader = None
+        self.writer = None
+        self.ip = None
+        self.port = None
 
         self.is_choked = True
         self.chokes_me = True
@@ -38,8 +45,8 @@ class Peer:
         self.pieces = set([])
         self.handshake_done = False
 
-        self.pending_requests = 0
-        self.pending_target = 30
+        self.pending_target = 10
+        self.pending = set()
 
         self.logger = PeerAdapter(module_logger, {'ip': self.ip, 'port': self.port})
 
@@ -49,15 +56,29 @@ class Peer:
                                                                 self.is_choked,
                                                                 self.chokes_me)
 
-    @classmethod
-    async def from_ip(cls, loop, ip: str, port: int):
-        """Generate an instance of Peer from an ip address"""
-        try:
-            reader, writer = await asyncio.open_connection(ip, port, loop=loop)
-        except connectionErrors as e:
-            logging.debug("[{}:{}] Exception: {}".format(ip, port, e))
-            return None
-        return cls(reader, writer)
+    async def connect(self,
+                      loop:   asyncio.AbstractEventLoop,
+                      ip:     Union[str, None]=None,
+                      port:   Union[int, None]=None,
+                      reader: Union[asyncio.StreamReader, None]=None,
+                      writer: Union[asyncio.StreamWriter, None]=None):
+        if ip is not None and port is not None and (reader, writer) == (None, None):
+            try:
+                self.reader, self.writer = await asyncio.open_connection(ip, port, loop=loop)
+            except PeerConnectErrors as e:
+                logging.debug("[{}:{}] Connection failed: {}".format(ip, port, e))
+                raise ConnectionError("Connection failed")
+
+        elif reader is not None and writer is not None and (ip, port) == (None, None):
+            self.reader = reader
+            self.writer = writer
+        else:
+            print("connection failed")
+            raise ValueError("Invalid arguments: Either (ip, port) or (reader, writer) must "
+                             "be specified")
+        self.ip, self.port = self.writer.get_extra_info('peername')
+        print("done")
+        self.logger.info("Established connection")
 
     async def read(self, buffer=b""):
         """"Generator returning the Messages received from the peer"""
@@ -66,8 +87,8 @@ class Peer:
         while self.reader:
             try:
                 buffer += await self.reader.read(buffer_size)
-            except connectionErrors as e:
-                self.logger.debug("Exception: {}".format(e))
+            except PeerConnectErrors as e:
+                self.logger.debug("read() failed: {}".format(e))
                 self.close()
                 break
 
@@ -88,14 +109,19 @@ class Peer:
                 self.close()
                 break
 
-    def write(self, message):
-        self.logger.debug("write: {}".format(str(message)))
-        # TODO: Check exceptions
-        self.writer.write(message.to_bytes())
+    # Might raise any exception listed in PeerWriteErrors
+    async def write(self, messages: List[Message]):
+        for m in messages:
+            self.logger.debug("write: {}".format(str(m)))
+
+        bytes_messages = b"".join(map(lambda m: m.to_bytes(), messages))
+        self.writer.write(bytes_messages)
+        # Await drain() so that an exception is raised if something goes wrong
+        await self.writer.drain()
 
     def close(self):
         self.logger.debug("Connection closed")
-        if self.writer:
+        if self.writer is not None:
             self.writer.close()
         self.writer = None
         self.reader = None
@@ -121,31 +147,52 @@ class Peer:
         elif isinstance(message, BitField):
             self.pieces = message.pieces
         elif isinstance(message, Piece):
-            self.pending_requests -= 1
-
-    # TODO: Cleanly end connection when the task is cancelled
-    async def exchange(self, torrent, initiated: bool=False):
-        if initiated:
-            self.write(HandShake(torrent.info_hash))
-            self.write(BitField(torrent.pieces, torrent.nbr_pieces))
-
-        async for message in self.read():
-            self.handle_message(message)
-            messages = await torrent.handle_message(message, self.pieces, self.chokes_me, initiated)
-            messages += request_blocks(self, torrent)
-            for m in messages:
-                self.write(m)
+            try:
+                self.pending.remove((message.piece_index, message.block_offset))
+            except KeyError:
+                raise ValueError("Received unrequested piece")
 
 
-def request_blocks(peer: Peer, torrent):
-    l = []
-    if not peer.chokes_me:
-        for _ in range(peer.pending_requests, peer.pending_target, 1):
-            r = torrent.request_new_block(peer.pieces)
-            if r is not None:
-                l.append(r)
-        peer.pending_requests += len(l)
-    return l
+# TODO: Cleanly end connection when the task is cancelled
+async def exchange(torrent,
+                   ip:        Union[str, None]=None,
+                   port:      Union[int, None]=None,
+                   reader:    Union[asyncio.StreamReader, None]=None,
+                   writer:    Union[asyncio.StreamWriter, None]=None,
+                   initiated: bool=False):
+    p = Peer()
+    loop = asyncio.get_event_loop()
+    try:
+        await p.connect(loop, ip=ip, port=port, reader=reader, writer=writer)
+    except (ConnectionError, ValueError) as e:
+        print(e)
+        return
+
+    print("done2")
+    torrent.add_peer(p)
+    p.logger.info("new peer added!")
+    if initiated:
+        await p.write([
+            HandShake(torrent.info_hash),
+            BitField(torrent.pieces, torrent.nbr_pieces)
+        ])
+
+    async for message in p.read():
+        try:
+            p.handle_message(message)
+        except ValueError as e:
+            p.logger.error("invalid message: {}", str(e))
+            break
+        messages = await torrent.handle_message(message, initiated)
+        messages += torrent.build_requests(p)
+        for m in messages:
+            if isinstance(m, Request):
+                p.pending.add((m.piece_index, m.block_offset))
+        try:
+            await p.write(messages)
+        except PeerWriteErrors as e:
+            p.logger.debug("write() failed: {}".format(str(e)))
+            break
 
 
 if __name__ == '__main__':

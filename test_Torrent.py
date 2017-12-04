@@ -1,14 +1,11 @@
-import unittest.mock
-import asyncio
-import logging
 import concurrent.futures
-
+import filecmp
+import unittest.mock
 from shutil import copy, rmtree
 from tempfile import mkdtemp
-from time import sleep
 from unittest import TestCase
-import filecmp
 
+from Peer import Peer
 from Torrent import *
 
 
@@ -20,57 +17,68 @@ class TestTorrentMethods(TestCase):
 
         with self.subTest(case="Peer has no pieces"):
             t = Torrent("", "", b"", [], piece_length, torrent_length)
-            peer_pieces = set([])
-            self.assertEqual(t.request_new_block(peer_pieces), None)
+            p = Peer()
+            t.add_peer(p)
+            with self.assertRaises(IndexError):
+                t.next_request(p.pending, p.pieces)
 
         with self.subTest(case="Peer has no interesting pieces"):
             t = Torrent("", "", b"", [], piece_length, torrent_length)
             t.pieces = set(range(0, t.nbr_pieces, 2))
-            peer_pieces = t.pieces
-            self.assertEqual(t.request_new_block(peer_pieces), None)
+            p = Peer()
+            t.add_peer(p)
+            with self.assertRaises(IndexError):
+                t.next_request(p.pending, p.pieces)
 
         with self.subTest(case="Peer has all the pieces"):
             """Check that the function requests all the necessary blocks."""
             t = Torrent("", "", b"", [], piece_length, torrent_length)
-            peer_pieces = set(range(0, t.nbr_pieces))
-            requested_blocks = set([])
+            p = Peer()
+            p.pieces = set(range(0, t.nbr_pieces))
+            t.add_peer(p)
+            p.chokes_me = False
             missing_blocks = set().union(*[
                 [(i, b * block_length) for i in range(0, t.nbr_pieces)]
                 for b in range(0, blocks_per_piece)
             ])
-            req = t.request_new_block(peer_pieces, block_length)
-            while req is not None:
-                # Record all the block requested
-                requested_blocks.add((req.piece_index, req.block_offset))
-                # Break out of the loop here once we've requested each block once
-                if requested_blocks == missing_blocks:
-                    break
-                req = t.request_new_block(peer_pieces, block_length)
+            p.pending_target = len(missing_blocks)
+            MAX_PENDING_REQUESTS = len(missing_blocks)
 
-            self.assertEqual(requested_blocks, missing_blocks)
+            while p.pending != missing_blocks:
+                reqs = t.build_requests(p)
+                if not reqs:
+                    break
+                for req in reqs:
+                    p.pending.add((req.piece_index, req.block_offset))
+
+            self.assertEqual(p.pending, missing_blocks)
 
         with self.subTest(case="Peer has all the missing pieces"):
             t = Torrent("", "", b"", [], piece_length, torrent_length)
             # We have pieces 0, 2, 4, 6...
             t.pieces = set(range(0, t.nbr_pieces, 2))
             # The peer has pieces 1, 3, 5, 7...
-            peer_pieces = set(range(1, t.nbr_pieces, 2))
-            requested_blocks = set([])
+            p = Peer()
+            p.pieces = set(range(1, t.nbr_pieces, 2))
+            p.pending = set()
+            p.chokes_me = False
+
+            t.add_peer(p)
             missing_blocks = set().union(*[
                 [(i, b * block_length) for i in range(1, t.nbr_pieces, 2)]
                 for b in range(0, blocks_per_piece)
             ])
-            req = t.request_new_block(peer_pieces)
-            while req is not None:
-                t.pending[req.piece_index][req.block_offset] = (True, b"\x00")
-                requested_blocks.add((req.piece_index, req.block_offset))
-                # Break out of the loop here once we've requested each block once
-                if requested_blocks == missing_blocks:
+            p.pending_target = len(missing_blocks)
+            MAX_PENDING_REQUESTS = len(missing_blocks)
+
+            while p.pending != missing_blocks:
+                reqs = t.build_requests(p)
+                if not reqs:
                     break
-                req = t.request_new_block(peer_pieces)
+                for req in reqs:
+                    p.pending.add((req.piece_index, req.block_offset))
 
-            self.assertEqual(requested_blocks, missing_blocks)
-
+            self.assertEqual(p.pending, missing_blocks)
 
 
 class TestLocalDownload(TestCase):
@@ -85,7 +93,7 @@ class TestLocalDownload(TestCase):
             datefmt="%H:%M:%S")
 
         loop = asyncio.new_event_loop()
-        #loop.set_debug(True)
+        loop.set_debug(True)
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         loop.set_default_executor(executor)
 
@@ -107,7 +115,7 @@ class TestLocalDownload(TestCase):
                 while item != "EVENT_ACCEPT_CONNECTIONS":
                     item = await t1.queue.get()
 
-                # Mock Torrent.get_peers to return the adress of the seeder
+                # Mock Torrent.get_peers to return the address of the seeder
                 get_peers_mocked.return_value = [("127.0.0.1", 6881)]
                 # Setup a directory and files for the leecher
                 t2 = init("./data/torrent files/lorem.txt.torrent", dir2)
@@ -120,18 +128,12 @@ class TestLocalDownload(TestCase):
                 while item != "EVENT_DOWNLOAD_COMPLETE":
                     item = await t2.queue.get()
 
-                stop(t2, loop)
-                stop(t1, loop)
+                t2.stop()
+                t1.stop()
 
-                # Wait for download()s to return
-                try:
-                    await asyncio.gather(*[f1, f2])
-                except asyncio.CancelledError:
-                    pass
+                await asyncio.gather(*[f1, f2])
 
-
-        loop.run_until_complete(asyncio.ensure_future(hypervisor(loop),loop=loop))
-
+        loop.run_until_complete(asyncio.ensure_future(hypervisor(loop), loop=loop))
 
         print('stopping loop')
         loop.stop()
@@ -144,6 +146,7 @@ class TestLocalDownload(TestCase):
 
         rmtree(dir1)
         rmtree(dir2)
+
 
 if __name__ == '__main__':
         unittest.main()

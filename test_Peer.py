@@ -43,7 +43,7 @@ class TestMessageReading(unittest.TestCase):
         loop = asyncio.new_event_loop()
 
         p = Peer()
-        p.connect(loop, reader=reader, writer=writer)
+        loop.run_until_complete(p.connect(loop, reader=reader, writer=writer))
         result = loop.run_until_complete(read_all(p))
         loop.close()
 

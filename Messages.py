@@ -164,6 +164,7 @@ class Choke(Message):
         - length = 1 (4 bytes)
         - message id = 0 (1 byte)"""
     message_id = 0
+    chokes_me = True
 
     def __init__(self):
         super(Choke, self).__init__(1)
@@ -174,6 +175,7 @@ class Unchoke(Message):
         - length = 1 (4 bytes)
         - message id = 1 (1 byte)"""
     message_id = 1
+    chokes_me = False
 
     def __init__(self):
         super(Unchoke, self).__init__(1)
@@ -184,6 +186,7 @@ class Interested(Message):
         - length = 1 (4 bytes)
         - message id = 2 (1 byte)"""
     message_id = 2
+    interested = True
 
     def __init__(self):
         super(Interested, self).__init__(1)
@@ -194,6 +197,7 @@ class NotInterested(Message):
         - length = 1 (4 bytes)
         - message id = 3 (1 byte)"""
     message_id = 3
+    interested = False
 
     def __init__(self):
         super(NotInterested, self).__init__(1)

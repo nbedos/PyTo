@@ -77,7 +77,6 @@ class Peer:
             raise ValueError("Invalid arguments: Either (ip, port) or (reader, writer) must "
                              "be specified")
         self.ip, self.port = self.writer.get_extra_info('peername')
-        print("done")
         self.logger.info("Established connection")
 
     async def read(self, buffer=b""):
@@ -126,6 +125,7 @@ class Peer:
         self.writer = None
         self.reader = None
 
+    # TODO: try functools.singledispatch implementation?
     def handle_message(self, message: Message):
         if not self.handshake_done:
             if isinstance(message, HandShake):
@@ -168,7 +168,6 @@ async def exchange(torrent,
         print(e)
         return
 
-    print("done2")
     torrent.add_peer(p)
     p.logger.info("new peer added!")
     if initiated:

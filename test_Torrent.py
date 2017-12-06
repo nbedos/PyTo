@@ -1,84 +1,108 @@
+import asyncio
 import concurrent.futures
+import datetime
 import filecmp
 import unittest.mock
+import logging
+import os
 from shutil import copy, rmtree
 from tempfile import mkdtemp
 from unittest import TestCase
 
+from Torrent import Torrent, next_request, init, download, rarity
 from Peer import Peer
-from Torrent import *
 
 
-class TestTorrentMethods(TestCase):
-    def test_request_new_block(self, block_length: int=16384, piece_length: int=16384*3+1):
-        q, r = divmod(piece_length, block_length)
-        blocks_per_piece = q + int(bool(r))
-        torrent_length = 8 * 10 * piece_length
+class TestTorrentFunctions(TestCase):
+    def test_next_request(self):
+        now = datetime.datetime.now()
+        with self.subTest(case="Piece pending: request the missing block"):
+            piece_index, block_offset = next_request(torrent_pending={0: {0: ({now}, b""),
+                                                                          1: (set(), b"")}
+                                                                      },
+                                                     torrent_pieces=set(),
+                                                     peer_pieces={0},
+                                                     peer_pending=set(),
+                                                     rarity=rarity([{0}]),
+                                                     endgame=True)
+            self.assertEqual((piece_index, block_offset), (0, 1))
 
-        with self.subTest(case="Peer has no pieces"):
-            t = Torrent("", "", b"", [], piece_length, torrent_length)
-            p = Peer()
-            t.add_peer(p)
+        with self.subTest(case="No pending piece: request the rarest piece"):
+            piece_index, block_offset = next_request(torrent_pending={},
+                                                     torrent_pieces=set(),
+                                                     peer_pieces={0, 1},
+                                                     peer_pending=set(),
+                                                     rarity=rarity([{0, 1}, {0}]),
+                                                     endgame=True)
+            self.assertEqual((piece_index, block_offset), (1, 0))
+
+        with self.subTest(case="All pieces requested or downloaded: add a request for a piece"):
+            piece_index, block_offset = next_request(torrent_pending={1: {0: ({now}, b"")},
+                                                                      2: {0: ({now}, b"")},
+                                                                      3: {0: ({now}, b"")}},
+                                                     torrent_pieces=set(),
+                                                     peer_pieces={1, 2, 3},
+                                                     peer_pending={(1, 0), (2, 0)},
+                                                     rarity=rarity([{1, 2, 3}, {3}]),
+                                                     endgame=True)
+            # The piece re-requested must not be in peer_pending so it has to be piece #3
+            self.assertEqual((piece_index, block_offset), (3, 0))
+
+        with self.subTest(case="Peer has no pieces: fail"):
             with self.assertRaises(IndexError):
-                t.next_request(p.pending, p.pieces)
+                next_request(torrent_pending={},
+                             torrent_pieces=set(),
+                             peer_pieces=set(),
+                             peer_pending=set(),
+                             rarity=[],
+                             endgame=True)
 
-        with self.subTest(case="Peer has no interesting pieces"):
-            t = Torrent("", "", b"", [], piece_length, torrent_length)
-            t.pieces = set(range(0, t.nbr_pieces, 2))
-            p = Peer()
-            t.add_peer(p)
+        with self.subTest(case="Peer has no interesting piece: fail"):
             with self.assertRaises(IndexError):
-                t.next_request(p.pending, p.pieces)
+                next_request(torrent_pending={},
+                             torrent_pieces={1, 3, 5},
+                             peer_pieces={1, 3, 5},
+                             peer_pending=set(),
+                             rarity=rarity([{1, 3, 5}]),
+                             endgame=True)
 
-        with self.subTest(case="Peer has all the pieces"):
-            """Check that the function requests all the necessary blocks."""
-            t = Torrent("", "", b"", [], piece_length, torrent_length)
+        with self.subTest(case="Interesting pieces already requested to the peer: fail"):
+            with self.assertRaises(IndexError):
+                next_request(torrent_pending={1: {0: ({now}, b"")},
+                                              2: {0: ({now}, b"")},
+                                              3: {0: ({now}, b"")}},
+                             torrent_pieces=set(),
+                             peer_pieces={1, 2, 3},
+                             peer_pending={(1, 0), (2, 0), (3, 0)},
+                             rarity=rarity([{1, 2, 3}]),
+                             endgame=True)
+
+        with self.subTest(case="Interesting pieces already requested to another peer: fail"):
+            with self.assertRaises(IndexError):
+                next_request(torrent_pending={5: {0: ({now}, b"")}},
+                             torrent_pieces={0, 1, 2, 3, 4},
+                             peer_pieces={5},
+                             peer_pending=set(),
+                             rarity=rarity([{5}, {1, 2, 3, 4, 5}]),
+                             endgame=False)
+
+        with self.subTest(case="Request all blocks of a file"):
+            piece_length = 5
+            length = 25
+            t = Torrent("", "", b"", [], piece_length, length)
             p = Peer()
-            p.pieces = set(range(0, t.nbr_pieces))
-            t.add_peer(p)
+            p.pieces = set(range(0, length, piece_length))
             p.chokes_me = False
-            missing_blocks = set().union(*[
-                [(i, b * block_length) for i in range(0, t.nbr_pieces)]
-                for b in range(0, blocks_per_piece)
-            ])
-            p.pending_target = len(missing_blocks)
-            MAX_PENDING_REQUESTS = len(missing_blocks)
-
-            while p.pending != missing_blocks:
-                reqs = t.build_requests(p)
-                if not reqs:
-                    break
-                for req in reqs:
-                    p.pending.add((req.piece_index, req.block_offset))
-
-            self.assertEqual(p.pending, missing_blocks)
-
-        with self.subTest(case="Peer has all the missing pieces"):
-            t = Torrent("", "", b"", [], piece_length, torrent_length)
-            # We have pieces 0, 2, 4, 6...
-            t.pieces = set(range(0, t.nbr_pieces, 2))
-            # The peer has pieces 1, 3, 5, 7...
-            p = Peer()
-            p.pieces = set(range(1, t.nbr_pieces, 2))
-            p.pending = set()
-            p.chokes_me = False
-
             t.add_peer(p)
-            missing_blocks = set().union(*[
-                [(i, b * block_length) for i in range(1, t.nbr_pieces, 2)]
-                for b in range(0, blocks_per_piece)
-            ])
-            p.pending_target = len(missing_blocks)
-            MAX_PENDING_REQUESTS = len(missing_blocks)
 
-            while p.pending != missing_blocks:
-                reqs = t.build_requests(p)
-                if not reqs:
-                    break
-                for req in reqs:
-                    p.pending.add((req.piece_index, req.block_offset))
+            result = set()
+            requests = t.build_requests(p, 1)
+            while requests:
+                for request in requests:
+                    result.add((request.piece_index, request.block_offset))
+                requests = t.build_requests(p, 1)
 
-            self.assertEqual(p.pending, missing_blocks)
+            self.assertEqual(result, set([(p, b) for p in p.pieces for b in range(0, piece_length)]))
 
 
 class TestLocalDownload(TestCase):
@@ -143,7 +167,6 @@ class TestLocalDownload(TestCase):
         f2 = os.path.join(dir2, "lorem.txt")
         
         self.assertEqual(filecmp.cmp(f1, f2, False), True)
-
         rmtree(dir1)
         rmtree(dir2)
 

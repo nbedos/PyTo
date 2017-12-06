@@ -12,7 +12,7 @@ import urllib.request
 from hashlib import sha1
 from random import SystemRandom
 from struct import unpack, iter_unpack, error as struct_error
-from typing import Iterator, Tuple, Union, List, Set
+from typing import Iterator, Tuple, Union, List, Set, Dict
 
 from BEncoding import bdecode, bencode
 from Messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, \
@@ -254,104 +254,47 @@ class Torrent:
                 return [Have(message.piece_index)]
         return []
 
-    def build_requests(self, peer: Peer):
+    def build_requests(self, peer: Peer, block_length: int=16384):
+        """Build a list of request to be sent to the peer
+
+        Side effect: update the list of pending piece of the Torrent instance"""
         if peer.chokes_me:
             return []
 
         l = []
+        piece_rarity = rarity([p.pieces for p in self.peers.values()])
+        assert(0 <= ENDGAME_PERCENT <= 100)
+        endgame_threshold = self.nbr_pieces * ENDGAME_PERCENT // 100
+        endgame = len(self.pieces) >= endgame_threshold
         for _ in range(len(peer.pending), peer.pending_target, 1):
             try:
-                req = self.next_request(peer.pieces, peer.pending)
+                piece_index, block_offset = next_request(self.pending,
+                                                         self.pieces,
+                                                         peer.pieces,
+                                                         peer.pending,
+                                                         piece_rarity,
+                                                         endgame)
             except IndexError:
                 break
 
             # Compute the length of the piece since the last one may be shorter
-            if req.piece_index == self.nbr_pieces - 1:
+            if piece_index == self.nbr_pieces - 1:
                 piece_length = self.length - self.piece_length * (self.nbr_pieces - 1)
             else:
                 piece_length = self.piece_length
 
-            # Update the list of pending pieces
-            if req.piece_index not in self.pending:
-                q, r = divmod(piece_length, req.block_length)
+            # Update the list of pending pieces of the Torrent instance
+            if piece_index not in self.pending:
+                q, r = divmod(piece_length, block_length)
                 nbr_blocks = q + int(bool(r))
-                self.pending[req.piece_index] = {
-                    (i * req.block_length): (set(), b"") for i in range(0, nbr_blocks)
+                self.pending[piece_index] = {
+                    (i * block_length): (set(), b"") for i in range(0, nbr_blocks)
                 }
-            requests, _ = self.pending[req.piece_index][req.block_offset]
+            requests, _ = self.pending[piece_index][block_offset]
             requests.add(datetime.datetime.now())
 
-            l.append(req)
+            l.append(Request(piece_index, block_offset, block_length))
         return l
-
-    def next_request(self,
-                     peer_pieces:  Set[int],
-                     peer_pending: Set[Tuple[int, int]],
-                     block_length: int=16384) -> Request:
-        """Choose the next block to download and return the corresponding Request message
-
-        Raise IndexError if no block is eligible for download
-
-        This function uses the following constants:
-            - RARITY_PERCENT: When choosing a rare piece, pick at random among the RARITY_PERCENT
-            rarest
-            - ENDGAME_PERCENT: Enter endgame mode if at least ENDGAME_PERCENT of the pieces have
-            been downloaded
-            - MAX_PENDING_REQUESTS: Maximum number of pending requests for a single block. Requests
-            which have timed out are not taken into account
-            - REQUEST_TIMEOUT: Requests lasting longer than REQUEST_TIMEOUT are ignored when
-            counting pending requests
-        """
-        candidates: Set[Tuple[int, int]] = set()
-        now = datetime.datetime.now()
-
-        def request_timed_out(t: datetime.datetime):
-            return (t - now).total_seconds() > REQUEST_TIMEOUT
-
-        # First choice: pick among the missing blocks of an incomplete piece
-        # Requests dating from more than REQUEST_TIMEOUT seconds ago are ignored
-        for piece in set(self.pending) & peer_pieces:
-            for offset, (requests, block) in self.pending[piece].items():
-                if not block:
-                    if (not requests) or all(map(request_timed_out, requests)):
-                        candidates.add((piece, offset))
-
-        # Second choice: pick the first block of one of the rarest pieces
-        if not candidates:
-            rarity = {}
-            for peer in self.peers.values():
-                for piece in ((peer.pieces - self.pieces) - set(self.pending)) & peer_pieces:
-                    if piece in rarity:
-                        rarity[piece] += 1
-                    else:
-                        rarity[piece] = 1
-            # Keep RARITY_PERCENT of the rarest pieces
-            pieces = [piece for piece, _ in sorted(rarity.items(), key=lambda t: t[1])]
-            assert (0 < RARITY_PERCENT <= 100)
-            nbr_rare_pieces = max(1, len(rarity) * RARITY_PERCENT // 100)
-            candidates = set((piece, 0) for piece in pieces[:nbr_rare_pieces])
-
-        # Third choice: Endgame mode. Pick a block of an incomplete piece which has already been
-        # requested but never received, unless there are already MAX_PENDING_REQUESTS requests
-        # for that block. Only allow endgame mode if at least ENDGAME_PERCENT pieces have been
-        # downloaded. Requests which have timed out are ignored. A Peer can request a piece a
-        # single time.
-        # assert(0 <= ENDGAME_PERCENT <= 100)
-        # endgame_threshold = self.nbr_pieces * ENDGAME_PERCENT // 100
-        # if (not candidates) and len(self.pieces) >= endgame_threshold:
-        #     for piece in set(self.pending) & peer_pieces:
-        #         print("endgame", self.pending[piece])
-        #         for offset, (requests, block) in self.pending[piece]:
-        #             if (not block) and (piece, block) not in peer_pending:
-        #                 pending_requests = [r for r in requests if not request_timed_out(r)]
-        #                 if len(pending_requests) < MAX_PENDING_REQUESTS:
-        #                     candidates.add((piece, block))
-
-        if not candidates:
-            raise IndexError("No block eligible for request")
-
-        piece_index, block_offset = SystemRandom().choice(list(candidates))
-        return Request(piece_index, block_offset, block_length)
 
     def stop(self):
         if self.server:
@@ -413,6 +356,82 @@ async def download(loop: asyncio.AbstractEventLoop, torrent: Torrent, listen_por
             del torrent.futures[item]
 
     torrent.file.close()
+
+
+def rarity(all_pieces: List[Set[int]]) -> List[Tuple[int, int]]:
+    """Count the number of copies of each piece
+
+    Return a list of tuples (piece_index, count) sorted by ascending count"""
+    c = {}
+    for pieces in all_pieces:
+        for piece in pieces:
+            try:
+                c[piece] += 1
+            except KeyError:
+                c[piece] = 1
+    return sorted(c.items(), key=lambda t: t[1])
+
+
+def next_request(torrent_pending: Dict[int, Dict[int, Tuple[Set[datetime.datetime], bytes]]],
+                 torrent_pieces:  Set[int],
+                 peer_pieces:     Set[int],
+                 peer_pending:    Set[Tuple[int, int]],
+                 rarity:          List[Tuple[int, int]],
+                 endgame:         bool) -> Tuple[int, int]:
+    """Choose the next block to download and return the corresponding Request message
+
+    Raise IndexError if no block is eligible for download
+
+    This function uses the following constants:
+        - RARITY_PERCENT: When choosing a rare piece, pick at random among the RARITY_PERCENT
+        rarest pieces owned by the peer
+        - ENDGAME_PERCENT: Enter endgame mode if at least ENDGAME_PERCENT of the pieces have
+        been downloaded
+        - MAX_PENDING_REQUESTS: Maximum number of pending requests for a single block. Requests
+        which have timed out are not taken into account
+        - REQUEST_TIMEOUT: Requests lasting longer than REQUEST_TIMEOUT are ignored when
+        counting pending requests
+    """
+    candidates: Set[Tuple[int, int]] = set()
+    now = datetime.datetime.now()
+
+    def request_timed_out(t: datetime.datetime):
+        return (t - now).total_seconds() > REQUEST_TIMEOUT
+
+    # Choice #1: Pick among the missing blocks of an incomplete piece
+    # Requests dating from more than REQUEST_TIMEOUT seconds ago are ignored
+    for piece in set(torrent_pending) & peer_pieces:
+        for offset, (requests, block) in torrent_pending[piece].items():
+            if not block:
+                if (not requests) or all(map(request_timed_out, requests)):
+                    candidates.add((piece, offset))
+
+    # Choice #2: Pick the first block of one of the rarest pieces
+    if not candidates:
+        # Exclude pieces which have been downloaded and pieces which have been requested
+        interesting_pieces = peer_pieces - torrent_pieces - set(torrent_pending)
+        peer_rarity = [(p, r) for p, r in rarity if p in interesting_pieces]
+        assert (0 < RARITY_PERCENT <= 100)
+        # Keep RARITY_PERCENT of the rarest pieces
+        nbr_rare_pieces = max(1, len(peer_rarity) * RARITY_PERCENT // 100)
+        candidates = set((piece, 0) for piece, _ in peer_rarity[:nbr_rare_pieces])
+
+    # Choice #3: Endgame mode. Pick a block of an incomplete piece which has already been
+    # requested but never received, unless there are already MAX_PENDING_REQUESTS requests
+    # for that block.
+    if not candidates and endgame:
+        for piece in set(torrent_pending) & peer_pieces:
+            for offset, (requests, block) in torrent_pending[piece].items():
+                if (not block) and (piece, offset) not in peer_pending:
+                    pending_requests = [r for r in requests if not request_timed_out(r)]
+                    if len(pending_requests) < MAX_PENDING_REQUESTS:
+                        candidates.add((piece, offset))
+
+    if not candidates:
+        raise IndexError("No block eligible for request")
+
+    piece_index, block_offset = SystemRandom().choice(list(candidates))
+    return piece_index, block_offset
 
 
 def _split(l: list, n: int) -> list:

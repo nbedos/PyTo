@@ -46,5 +46,6 @@ class TestMessageToBytes(unittest.TestCase):
             with self.subTest(case=value, expected=key):
                 self.assertEqual(value.to_bytes(), key)
 
+
 if __name__ == '__main__':
         unittest.main()

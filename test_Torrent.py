@@ -9,7 +9,7 @@ from shutil import copy, rmtree
 from tempfile import mkdtemp
 from unittest import TestCase
 
-from Torrent import Torrent, next_request, init, download, rarity
+from Torrent import Torrent, next_request, init, download
 from Peer import Peer
 
 
@@ -23,7 +23,7 @@ class TestTorrentFunctions(TestCase):
                                                      torrent_pieces=set(),
                                                      peer_pieces={0},
                                                      peer_pending=set(),
-                                                     rarity=rarity([{0}]),
+                                                     rarity=[(0, 1)],
                                                      endgame=True)
             self.assertEqual((piece_index, block_offset), (0, 1))
 
@@ -32,7 +32,7 @@ class TestTorrentFunctions(TestCase):
                                                      torrent_pieces=set(),
                                                      peer_pieces={0, 1},
                                                      peer_pending=set(),
-                                                     rarity=rarity([{0, 1}, {0}]),
+                                                     rarity=[(1, 1), (0, 2)],
                                                      endgame=True)
             self.assertEqual((piece_index, block_offset), (1, 0))
 
@@ -43,7 +43,7 @@ class TestTorrentFunctions(TestCase):
                                                      torrent_pieces=set(),
                                                      peer_pieces={1, 2, 3},
                                                      peer_pending={(1, 0), (2, 0)},
-                                                     rarity=rarity([{1, 2, 3}, {3}]),
+                                                     rarity=[(1, 1), (2, 1), (3, 2)],
                                                      endgame=True)
             # The piece re-requested must not be in peer_pending so it has to be piece #3
             self.assertEqual((piece_index, block_offset), (3, 0))
@@ -63,7 +63,7 @@ class TestTorrentFunctions(TestCase):
                              torrent_pieces={1, 3, 5},
                              peer_pieces={1, 3, 5},
                              peer_pending=set(),
-                             rarity=rarity([{1, 3, 5}]),
+                             rarity=[(1, 1), (3, 1), (5, 1)],
                              endgame=True)
 
         with self.subTest(case="Interesting pieces already requested to the peer: fail"):
@@ -74,7 +74,7 @@ class TestTorrentFunctions(TestCase):
                              torrent_pieces=set(),
                              peer_pieces={1, 2, 3},
                              peer_pending={(1, 0), (2, 0), (3, 0)},
-                             rarity=rarity([{1, 2, 3}]),
+                             rarity=[(1, 1), (2, 1), (3, 1)],
                              endgame=True)
 
         with self.subTest(case="Interesting pieces already requested to another peer: fail"):
@@ -83,7 +83,7 @@ class TestTorrentFunctions(TestCase):
                              torrent_pieces={0, 1, 2, 3, 4},
                              peer_pieces={5},
                              peer_pending=set(),
-                             rarity=rarity([{5}, {1, 2, 3, 4, 5}]),
+                             rarity=[(1, 1), (2, 1), (3, 1), (4, 1), (5, 2)],
                              endgame=False)
 
         with self.subTest(case="Request all blocks of a file"):
@@ -92,6 +92,8 @@ class TestTorrentFunctions(TestCase):
             t = Torrent("", "", b"", [], piece_length, length)
             p = Peer()
             p.pieces = set(range(0, length, piece_length))
+            t.piece_rarity = [(piece, 1) for piece in p.pieces]
+            t.piece_rarity_sorted = sorted(t.piece_rarity)
             p.chokes_me = False
             t.add_peer(p)
 

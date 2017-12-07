@@ -51,7 +51,7 @@ class Torrent:
         self.name = _sanitize(name)
         self.info_hash = info_hash
         self.hashes = hashes
-        if piece_length <= 0 or piece_length > length:
+        if not (0 < piece_length <= length):
             raise ValueError("Lengths must verify 0 < piece_length <= length")
         self.length = length
         self.piece_length = piece_length
@@ -63,6 +63,9 @@ class Torrent:
         self.peers = dict([])
         self.blacklist = dict([])
         self.pending = dict([])
+        # TODO: remove pieces from rarity data structures when a peer is disconnected
+        self.piece_rarity = dict([])
+        self.piece_rarity_sorted = []
 
         self.logger = TorrentAdapter(module_logger, {'name': self.name})
 
@@ -168,7 +171,7 @@ class Torrent:
             self.peers[(p.ip, p.port)] = p
 
     def is_complete(self):
-        print("is missing:", set(range(0, self.nbr_pieces)) - self.pieces)
+        self.logger.debug("missing pieces: {}".format(set(range(0, self.nbr_pieces)) - self.pieces))
         return self.pieces == set(range(0, self.nbr_pieces))
 
     async def handle_message(self, message: Message, initiated: bool):
@@ -189,7 +192,22 @@ class Torrent:
             return [Unchoke()]
         elif isinstance(message, NotInterested):
             return [Choke()]
+        elif isinstance(message, Have):
+            try:
+                self.piece_rarity[message.piece_index] += 1
+            except KeyError:
+                self.piece_rarity[message.piece_index] = 1
+            self.piece_rarity_sorted = sorted(self.piece_rarity.items(), key=lambda x: x[1])
         elif isinstance(message, BitField):
+            # Update rarity
+            for piece in message.pieces:
+                try:
+                    self.piece_rarity[piece] += 1
+                except KeyError:
+                    self.piece_rarity[piece] = 1
+            self.piece_rarity_sorted = sorted(self.piece_rarity.items(), key=lambda x: x[1])
+
+            # Check is the peer has any interesting piece
             requestable_pieces = (self.pieces ^ message.pieces) & message.pieces
             if requestable_pieces:
                 return [Interested()]
@@ -262,7 +280,6 @@ class Torrent:
             return []
 
         l = []
-        piece_rarity = rarity([p.pieces for p in self.peers.values()])
         assert(0 <= ENDGAME_PERCENT <= 100)
         endgame_threshold = self.nbr_pieces * ENDGAME_PERCENT // 100
         endgame = len(self.pieces) >= endgame_threshold
@@ -272,7 +289,7 @@ class Torrent:
                                                          self.pieces,
                                                          peer.pieces,
                                                          peer.pending,
-                                                         piece_rarity,
+                                                         self.piece_rarity_sorted,
                                                          endgame)
             except IndexError:
                 break
@@ -338,13 +355,15 @@ async def download(loop: asyncio.AbstractEventLoop, torrent: Torrent, listen_por
     while torrent.futures:
         print(torrent.futures)
         try:
-            done, futures = await asyncio.wait(torrent.futures, return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait(torrent.futures, return_when=asyncio.FIRST_COMPLETED)
         except asyncio.CancelledError:
             break
 
         for item in done:
-            if isinstance(item.result(), asyncio.AbstractServer):
-                torrent.server = item.result()
+            result = item.result()
+
+            if isinstance(result, asyncio.AbstractServer):
+                torrent.server = result
                 f = asyncio.ensure_future(torrent.server.wait_closed())
                 torrent.futures[f] = False
                 try:
@@ -356,20 +375,6 @@ async def download(loop: asyncio.AbstractEventLoop, torrent: Torrent, listen_por
             del torrent.futures[item]
 
     torrent.file.close()
-
-
-def rarity(all_pieces: List[Set[int]]) -> List[Tuple[int, int]]:
-    """Count the number of copies of each piece
-
-    Return a list of tuples (piece_index, count) sorted by ascending count"""
-    c = {}
-    for pieces in all_pieces:
-        for piece in pieces:
-            try:
-                c[piece] += 1
-            except KeyError:
-                c[piece] = 1
-    return sorted(c.items(), key=lambda t: t[1])
 
 
 def next_request(torrent_pending: Dict[int, Dict[int, Tuple[Set[datetime.datetime], bytes]]],

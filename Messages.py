@@ -74,12 +74,8 @@ class Message(object):
             return None, buffer
 
         # Third step: use the message_id to invoke the from_payload() constructor of the right class
-        decoding_functions = {cls.message_id: cls.from_payload for cls in
-                              Message.__subclasses__() if
-                              hasattr(cls, "message_id")}
-
         try:
-            decode = decoding_functions[message_id]
+            decode = DECODING_FUNCTIONS[message_id]
             total_length = message_length + LENGTH_SIZE
             if buffer_length < total_length:
                 return None, buffer
@@ -422,6 +418,11 @@ class Port(Message):
             pass
         raise ValueError("Invalid binary format for Port message")
 
+
+# TODO: Add a metaclass to Message to update the following dictionary when a class is created
+DECODING_FUNCTIONS = {cls.message_id: cls.from_payload for cls in
+                      Message.__subclasses__() if
+                      hasattr(cls, "message_id")}
 
 if __name__ == "__main__":
     pass

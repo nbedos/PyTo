@@ -5,7 +5,6 @@ Executing this module launches the download of the last Archlinux installation f
 way to see PyTo working.
 """
 import concurrent.futures
-import cProfile
 from tempfile import mkdtemp, gettempdir
 from os.path import join
 
@@ -28,7 +27,7 @@ def main():
     logging.info("Logging to {}".format(logfile))
 
     loop = asyncio.get_event_loop()
-    loop.set_debug(True)
+    #loop.set_debug(True)
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     loop.set_default_executor(executor)
 
@@ -39,8 +38,11 @@ def main():
         f = asyncio.ensure_future(download(loop, t, 6881))
 
         item = ""
-        while item != "EVENT_DOWNLOAD_COMPLETE":
+        while item != "EVENT_DOWNLOAD_COMPLETE" and item != "EVENT_END":
             item = await t.queue.get()
+
+        if item == "EVENT_END":
+            raise ValueError
 
         t.stop()
 
@@ -53,4 +55,4 @@ def main():
 
 
 if __name__ == '__main__':
-    cProfile.run('main()', sort='tottime')
+    main()

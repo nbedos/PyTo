@@ -119,7 +119,7 @@ class TestLocalDownload(TestCase):
             datefmt="%H:%M:%S")
 
         loop = asyncio.new_event_loop()
-        loop.set_debug(True)
+        #loop.set_debug(True)
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         loop.set_default_executor(executor)
 
@@ -138,8 +138,11 @@ class TestLocalDownload(TestCase):
 
                 # Wait until the seeder is ready to accept incoming connections
                 item = ""
-                while item != "EVENT_ACCEPT_CONNECTIONS":
+                while item != "EVENT_ACCEPT_CONNECTIONS" and "EVENT_END":
                     item = await t1.queue.get()
+
+                if item == "EVENT_END":
+                    raise ValueError
 
                 # Mock Torrent.get_peers to return the address of the seeder
                 get_peers_mocked.return_value = [("127.0.0.1", 6881)]
@@ -149,17 +152,20 @@ class TestLocalDownload(TestCase):
                 # Start the leecher
                 f2 = asyncio.ensure_future(download(loop, t2, 6882), loop=loop)
 
-                # Wait for the download to complete
+                # Wait for the download to complete or fail
                 item = ""
-                while item != "EVENT_DOWNLOAD_COMPLETE":
+                while item != "EVENT_DOWNLOAD_COMPLETE" and item != "EVENT_END":
                     item = await t2.queue.get()
+
+                if item == "EVENT_END":
+                    raise ValueError
 
                 t2.stop()
                 t1.stop()
 
                 await asyncio.gather(*[f1, f2])
 
-        loop.run_until_complete(asyncio.ensure_future(hypervisor(loop), loop=loop))
+        loop.run_until_complete(hypervisor(loop))
 
         print('stopping loop')
         loop.stop()

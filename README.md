@@ -27,7 +27,7 @@ Functionalities:
  * **[Done]** Checking on disk if the file has already been partially downloaded when creating a Torrent instance
  * **[Done]** Handling spontaneous connections from peers
  * **[Done]** Having the client download from other instances of itself for testing
- * **[Done]** Download a whole file from the Internet (500 MB ISO downloaded at 2 MB/s)
+ * **[Done]** Download a whole file from the Internet (500 MB ISO downloaded at 17 MB/s)
  * **[in progress]** Exchanging file pieces with peers
  * **[to be done]** Handling Torrent with multiple files
  * **[to be done]** Starting downloads from a magnet link

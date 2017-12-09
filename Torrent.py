@@ -314,8 +314,9 @@ class Torrent:
         return l
 
     def stop(self):
+        self.queue.put_nowait("EVENT_END")
+        self.logger.info("EVENT_END")
         if self.server:
-            print('closing server')
             self.server.close()
 
         for peer in self.peers.values():
@@ -353,24 +354,28 @@ async def download(loop: asyncio.AbstractEventLoop, torrent: Torrent, listen_por
         torrent.futures[f] = True
 
     while torrent.futures:
-        print(torrent.futures)
         try:
             done, _ = await asyncio.wait(torrent.futures, return_when=asyncio.FIRST_COMPLETED)
         except asyncio.CancelledError:
             break
 
         for item in done:
-            result = item.result()
-
-            if isinstance(result, asyncio.AbstractServer):
-                torrent.server = result
-                f = asyncio.ensure_future(torrent.server.wait_closed())
-                torrent.futures[f] = False
-                try:
-                    torrent.queue.put_nowait("EVENT_ACCEPT_CONNECTIONS")
-                    torrent.logger.info("EVENT_ACCEPT_CONNECTIONS")
-                except asyncio.QueueFull:
-                    torrent.logger.warning("Queue full, could not write event")
+            try:
+                result = item.result()
+            # We catch ALL exceptions here, otherwise one of our futures may fail silently
+            except Exception:
+                torrent.logger.exception("Future failed")
+                torrent.stop()
+            else:
+                if isinstance(result, asyncio.AbstractServer):
+                    torrent.server = result
+                    f = asyncio.ensure_future(torrent.server.wait_closed())
+                    torrent.futures[f] = False
+                    try:
+                        torrent.queue.put_nowait("EVENT_ACCEPT_CONNECTIONS")
+                        torrent.logger.info("EVENT_ACCEPT_CONNECTIONS")
+                    except asyncio.QueueFull:
+                        torrent.logger.warning("Queue full, could not write event")
 
             del torrent.futures[item]
 

@@ -27,8 +27,7 @@ module_logger = logging.getLogger(__name__)
 class PeerAdapter(logging.LoggerAdapter):
     """Add the port and ip of the Peer to logger messages"""
     def process(self, msg, kwargs):
-        return msg, kwargs
-        #return '{:>15}:{:<5} {}'.format(self.extra['ip'], self.extra['port'], msg), kwargs
+        return '{:>15}:{:<5} {}'.format(self.extra['ip'], self.extra['port'], msg), kwargs
 
 
 class Peer:
@@ -48,7 +47,7 @@ class Peer:
         self.pending_target = 10
         self.pending = set()
 
-        self.logger = PeerAdapter(module_logger, {'ip': self.ip, 'port': self.port})
+        self.logger = PeerAdapter(module_logger, {'ip': 'unknwon', 'port': 'unknown'})
 
     def __repr__(self) -> str:
         return "Peer({}:{}, is_choked={}, chokes_me={})".format(self.ip,
@@ -73,10 +72,10 @@ class Peer:
             self.reader = reader
             self.writer = writer
         else:
-            print("connection failed")
             raise ValueError("Invalid arguments: Either (ip, port) or (reader, writer) must "
                              "be specified")
         self.ip, self.port = self.writer.get_extra_info('peername')
+        self.logger = PeerAdapter(module_logger, {'ip': self.ip, 'port': self.port})
         self.logger.info("Established connection")
 
     async def read(self, buffer=b""):
@@ -164,8 +163,8 @@ async def exchange(torrent,
     loop = asyncio.get_event_loop()
     try:
         await p.connect(loop, ip=ip, port=port, reader=reader, writer=writer)
-    except (ConnectionError, ValueError) as e:
-        print(e)
+    except ConnectionError:
+        logging.info("Connection failed for {}:{}".format(ip, port))
         return
 
     torrent.add_peer(p)

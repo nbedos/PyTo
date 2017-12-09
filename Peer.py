@@ -124,32 +124,45 @@ class Peer:
         self.writer = None
         self.reader = None
 
-    # TODO: try functools.singledispatch implementation?
     def handle_message(self, message: Message):
+        # Maybe move this check somewhere more appropriate
         if not self.handshake_done:
             if isinstance(message, HandShake):
                 self.handshake_done = True
             else:
                 raise ValueError("Invalid message")
-        elif isinstance(message, KeepAlive):
-            pass
-        elif isinstance(message, Choke):
-            self.chokes_me = True
-        elif isinstance(message, Unchoke):
-            self.chokes_me = False
-        elif isinstance(message, Interested):
-            self.is_interested = True
-        elif isinstance(message, NotInterested):
-            self.is_interested = False
-        elif isinstance(message, Have):
-            self.pieces.add(message.piece_index)
-        elif isinstance(message, BitField):
-            self.pieces = message.pieces
-        elif isinstance(message, Piece):
+        else:
+            handle_name = '_handle_' + message.__class__.__name__
             try:
-                self.pending.remove((message.piece_index, message.block_offset))
-            except KeyError:
-                raise ValueError("Received unrequested piece")
+                handle = getattr(self, handle_name)
+            except AttributeError:
+                pass
+            else:
+                handle(message)
+
+    def _handle_Choke(self, _: Choke):
+        self.chokes_me = True
+
+    def _handle_Unchoke(self, _: Unchoke):
+        self.chokes_me = False
+
+    def _handle_Interested(self, _: Interested):
+        self.is_interested = True
+
+    def _handle_NotInterested(self, _: NotInterested):
+        self.is_interested = False
+
+    def _handle_Have(self, message: Have):
+        self.pieces.add(message.piece_index)
+
+    def _handle_BitField(self, message: BitField):
+        self.pieces = message.pieces
+
+    def _handle_Piece(self, message: Piece):
+        try:
+            self.pending.remove((message.piece_index, message.block_offset))
+        except KeyError:
+            raise ValueError("Received unrequested piece")
 
 
 # TODO: Cleanly end connection when the task is cancelled

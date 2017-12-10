@@ -7,6 +7,7 @@ import asyncio
 import datetime
 import logging
 import os
+import socket
 import urllib.parse
 import urllib.request
 from hashlib import sha1
@@ -70,8 +71,8 @@ class Torrent:
 
         self.logger = TorrentAdapter(module_logger, {'name': self.name})
 
-        self.futures = {}
-        self.server = None
+        self.futures = set([])
+        self.socket = None
 
         self.queue = asyncio.Queue(50)
 
@@ -120,7 +121,6 @@ class Torrent:
             await asyncio.wait([
                 loop.run_in_executor(None, self._seek_and_write, piece_index, piece)
             ])
-
 
     def init_files(self, download_dir: str):
         """Create missing files, check existing ones"""
@@ -399,30 +399,31 @@ class Torrent:
         return l
 
     def stop(self):
+        for f in self.futures:
+            f.cancel()
+        print(self.futures)
+
+    #TODO: Why does test_Torrent fails if we close all sockets ?
+    # "OSError: [WinError 10038] Une opération a été tentée sur autre chose qu’un socket"
+    def close(self):
         self.queue.put_nowait("EVENT_END")
         self.logger.info("EVENT_END")
-        if self.server:
-            self.server.close()
+        # if self.socket:
+        #     print(self.socket)
+        #     #self.socket.shutdown(socket.SHUT_RDWR)
+        #     self.socket.close()
+        # for peer in self.peers.values():
+        #     print(peer.socket)
+        #     if peer.socket:
+        #         peer.socket.shutdown(socket.SHUT_RDWR)
+        #         peer.socket.close()
+        self.file.close()
 
-        for peer in self.peers.values():
-            if peer.writer:
-                peer.writer.close()
-
-
-# download() awaits torrent.futures... but when a new connection is accepted, download() may
-# still keep waiting on the old version of torrent.futures (which does not include
-# the new peer). So we need download() to reevaluate torrent.futures as soon as a new peer is
-# added. Otherwise we may miss something, such as exchange() failing because of an exception.
-# DONE: Temporary fix: download waits on a global event which is set when a peer connects
-# TODO: Long term fix: Setup network I/O with sockets to get rid off the callback accept_connection:
-# connections will simply be accepted in download()
-def accept_connection(torrent: Torrent,
-                      reader: asyncio.StreamReader,
-                      writer: asyncio.StreamWriter,
-                      event: asyncio.Event):
-    f = asyncio.ensure_future(exchange(torrent, reader=reader, writer=writer, initiated=False))
-    torrent.futures[f] = True
-    event.set()
+    def start_server(self, port: int):
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setblocking(0)
+        self.socket.bind(('', port))
+        self.socket.listen(5)
 
 
 def init(torrent_file: str, download_dir: str):
@@ -432,69 +433,53 @@ def init(torrent_file: str, download_dir: str):
     return torrent
 
 
-# TODO: Dimanche --> s'arranger pour tuer l'évènement quand on a besoin de sortir de download()
 async def download(loop: asyncio.AbstractEventLoop, torrent: Torrent, listen_port: int):
-    # start_server will set up a server listening on the given port and return
-    # as soon as it is done. The value returned is an AbstractServer instance.
-    # Then, handle_connection will be called to handle every incoming
-    # connection.
-    f_server = asyncio.ensure_future(
-        asyncio.start_server(lambda r, w: accept_connection(torrent, r, w, NEW_PEER_EVENT),
-                             host='localhost',
-                             port=listen_port,
-                             loop=loop)
-    )
-    NEW_PEER_EVENT = asyncio.Event()
-    torrent.futures[f_server] = True
 
-    NEW_PEER_EVENT.clear()
-    f_event = asyncio.ensure_future(NEW_PEER_EVENT.wait())
-    torrent.futures[f_event] = False
-
+    # Connect to peers
     for ip, port in torrent.get_peers():
         f = asyncio.ensure_future(exchange(torrent, ip=ip, port=port, initiated=True))
-        torrent.futures[f] = True
+        torrent.futures.add(f)
+
+    # Start accepting new connections
+    torrent.start_server(listen_port)
+    print("server:", torrent.socket)
+    f_accept = asyncio.ensure_future(loop.sock_accept(torrent.socket))
+    torrent.futures.add(f_accept)
+    try:
+        torrent.queue.put_nowait("EVENT_ACCEPT_CONNECTIONS")
+        torrent.logger.info("EVENT_ACCEPT_CONNECTIONS")
+    except asyncio.QueueFull:
+        torrent.logger.warning("Queue full, could not write event")
 
     while torrent.futures:
         try:
-            done, _ = await asyncio.wait(torrent.futures, return_when=asyncio.FIRST_COMPLETED)
+            done, torrent.futures = await asyncio.wait(torrent.futures,
+                                                       return_when=asyncio.FIRST_COMPLETED)
         except asyncio.CancelledError:
             break
 
         for item in done:
             try:
                 result = item.result()
-                print(torrent.futures)
-            # We catch ALL exceptions here, otherwise one of our futures may fail silently
             except asyncio.CancelledError:
-                pass
+                torrent.logger.info("Task cancelled: {}".format(item))
+            # We catch ALL exceptions here, otherwise one of our futures may fail silently
             except Exception:
                 torrent.logger.exception("Future failed")
                 torrent.stop()
                 raise
+            else:
+                if item == f_accept:
+                    # Start exchanging data with the peer
+                    peer_socket, (ip, port) = result
+                    f = asyncio.ensure_future(exchange(torrent, ip, port, peer_socket, initiated=False))
+                    torrent.futures.add(f)
+                    # Set up another future to accept incoming connections
+                    f_accept = asyncio.ensure_future(loop.sock_accept(torrent.socket))
+                    torrent.futures.add(f_accept)
 
-            if item == f_server:
-                torrent.server = result
-                f = asyncio.ensure_future(torrent.server.wait_closed())
-                torrent.futures[f] = False
-                try:
-                    torrent.queue.put_nowait("EVENT_ACCEPT_CONNECTIONS")
-                    torrent.logger.info("EVENT_ACCEPT_CONNECTIONS")
-                except asyncio.QueueFull:
-                    torrent.logger.warning("Queue full, could not write event")
-            elif item == f_event:
-                # If the server is still running, reset the event
-                if torrent.server.sockets is not None:
-                    NEW_PEER_EVENT.clear()
-                    f_event = asyncio.ensure_future(NEW_PEER_EVENT.wait())
-                    torrent.futures[f_event] = False
-
-            if torrent.server.sockets is None:
-                f_event.cancel()
-
-            del torrent.futures[item]
-
-    torrent.file.close()
+    print(torrent.futures)
+    torrent.close()
 
 
 def next_request(torrent_pending: Dict[int, Dict[int, Tuple[Set[datetime.datetime], bytes]]],

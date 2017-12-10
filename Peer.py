@@ -6,11 +6,12 @@ An instance of the Peer class represents a member of the network
 import asyncio
 import datetime
 import logging
+import socket
 
 from Messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, \
                      BitField, Request, Piece, Cancel, Port, HandShake
 
-from typing import List, Union
+from typing import List, Union, AsyncIterable
 PeerConnectErrors = (ConnectionRefusedError,
                      ConnectionAbortedError,
                      ConnectionError,
@@ -32,22 +33,26 @@ class PeerAdapter(logging.LoggerAdapter):
 
 class Peer:
     def __init__(self):
-        self.reader = None
-        self.writer = None
+        # Networking
+        self.socket = None
         self.ip = None
         self.port = None
+        self.buffer = b""
+        self.buffer_size = 4096
 
+        # Peer status
+        self.handshake_done = False
         self.is_choked = True
         self.chokes_me = True
         self.is_interested = False
         self.interests_me = False
         self.pieces = set([])
-        self.handshake_done = False
 
-        self.pending_target = 10
+        # Requests sent
         self.pending = set()
+        self.pending_target = 10
 
-        self.logger = PeerAdapter(module_logger, {'ip': 'unknwon', 'port': 'unknown'})
+        self.logger = PeerAdapter(module_logger, {'ip': 'unknown', 'port': 'unknown'})
 
     def __repr__(self) -> str:
         return "Peer({}:{}, is_choked={}, chokes_me={})".format(self.ip,
@@ -57,55 +62,65 @@ class Peer:
 
     async def connect(self,
                       loop:   asyncio.AbstractEventLoop,
-                      ip:     Union[str, None]=None,
-                      port:   Union[int, None]=None,
-                      reader: Union[asyncio.StreamReader, None]=None,
-                      writer: Union[asyncio.StreamWriter, None]=None):
-        if ip is not None and port is not None and (reader, writer) == (None, None):
+                      ip:     str,
+                      port:   int,
+                      peer_socket: Union[socket.socket, None]=None):
+        if peer_socket is None:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.setblocking(0)
             try:
-                self.reader, self.writer = await asyncio.open_connection(ip, port, loop=loop)
+                await loop.sock_connect(self.socket, (ip, port))
             except PeerConnectErrors as e:
                 logging.debug("[{}:{}] Connection failed: {}".format(ip, port, e))
                 raise ConnectionError("Connection failed")
-
-        elif reader is not None and writer is not None and (ip, port) == (None, None):
-            self.reader = reader
-            self.writer = writer
         else:
-            raise ValueError("Invalid arguments: Either (ip, port) or (reader, writer) must "
-                             "be specified")
-        self.ip, self.port = self.writer.get_extra_info('peername')
+            self.socket = peer_socket
+            self.socket.setblocking(0)
+
+        print("peer:", self.socket)
+        self.ip = ip
+        self.port = port
         self.logger = PeerAdapter(module_logger, {'ip': self.ip, 'port': self.port})
         self.logger.info("Established connection")
 
-    async def read(self, buffer=b""):
-        """"Generator returning the Messages received from the peer"""
-        buffer_size = 4096
+    async def read(self) -> bytes:
+        """Read a chunk of data sent by the peer
 
-        while self.reader:
+        Raise EOFError in case of error or when the other end of the socket is closed"""
+        loop = asyncio.get_event_loop()
+        try:
+            data = await loop.sock_recv(self.socket, self.buffer_size)
+        except PeerConnectErrors as e:
+            self.logger.debug("sock_recv() failed: {}".format(e))
+            raise EOFError
+
+        if not data:
+            raise EOFError
+
+        return data
+
+    async def get_messages(self) -> AsyncIterable:
+        """"Generator returning the Messages sent by the peer"""
+        while self.socket:
             try:
-                buffer += await self.reader.read(buffer_size)
-            except PeerConnectErrors as e:
-                self.logger.debug("read() failed: {}".format(e))
+                self.buffer += await self.read()
+            except EOFError:
+                self.logger.debug("Connection terminated unexpectedly")
                 self.close()
                 break
 
-            while buffer:
+            while self.buffer:
                 try:
-                    message, buffer = Message.from_bytes(buffer)
+                    message, self.buffer = Message.from_bytes(self.buffer)
                     if message is None:
                         break
                     else:
                         self.logger.debug("Message received: {}".format(str(message)))
                         yield message
                 except ValueError:
-                    self.logger.error("Received invalid message: {}".format(str(buffer)))
+                    self.logger.error("Received invalid message: {}".format(str(self.buffer)))
                     self.close()
                     break
-
-            if self.reader is not None and self.reader.at_eof():
-                self.close()
-                break
 
     # Might raise any exception listed in PeerWriteErrors
     async def write(self, messages: List[Message]):
@@ -113,16 +128,14 @@ class Peer:
             self.logger.debug("write: {}".format(str(m)))
 
         bytes_messages = b"".join(map(lambda m: m.to_bytes(), messages))
-        self.writer.write(bytes_messages)
-        # Await drain() so that an exception is raised if something goes wrong
-        await self.writer.drain()
+        loop = asyncio.get_event_loop()
+        await loop.sock_sendall(self.socket, bytes_messages)
 
     def close(self):
         self.logger.debug("Connection closed")
-        if self.writer is not None:
-            self.writer.close()
-        self.writer = None
-        self.reader = None
+        if self.socket is not None:
+            self.socket.close()
+        self.socket = None
 
     def handle_message(self, message: Message):
         # TODO: Maybe move this check somewhere more appropriate
@@ -179,15 +192,14 @@ class Peer:
 
 # TODO: Cleanly end connection when the task is cancelled
 async def exchange(torrent,
-                   ip:        Union[str, None]=None,
-                   port:      Union[int, None]=None,
-                   reader:    Union[asyncio.StreamReader, None]=None,
-                   writer:    Union[asyncio.StreamWriter, None]=None,
+                   ip:        str,
+                   port:      int,
+                   socket:    Union[socket.socket, None]=None,
                    initiated: bool=False):
     p = Peer()
     loop = asyncio.get_event_loop()
     try:
-        await p.connect(loop, ip=ip, port=port, reader=reader, writer=writer)
+        await p.connect(loop, ip=ip, port=port, peer_socket=socket)
     except ConnectionError:
         logging.info("Connection failed for {}:{}".format(ip, port))
         return
@@ -200,7 +212,7 @@ async def exchange(torrent,
             BitField(torrent.pieces, torrent.nbr_pieces)
         ])
 
-    async for message in p.read():
+    async for message in p.get_messages():
         # Update the peer with information from the message
         try:
             p.handle_message(message)

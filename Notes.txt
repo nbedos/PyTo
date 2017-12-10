@@ -1,0 +1,14 @@
+ASYNCIO
+
+Remainder to always await each and every asyncio "future" scheduled for running. The reason is that
+if one of the futures fails and raises an exception, the failure might go unnoticed: An exception
+would only be caught when accessing future.result(). If the result of the future is never evaluated,
+ we might never know about the exception.
+
+What not to do: schedule multiple futures and wait on a single one. If this future waits for an
+event happening in another future, it might keep waiting forever if the other future fails. And we
+would not know about the failure since we did not wait for this future.
+
+What to do : Wait for all the futures that have been scheduled and evaluate their results. If you
+don't, make sure that a future silently failing would not prevent another of your futures to
+complete its task.

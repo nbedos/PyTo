@@ -196,10 +196,11 @@ class TestLocalDownload(TestCase):
 
         file_seeder = os.path.join(dir1, "lorem.txt")
         file_leecher = os.path.join(dir2, "lorem.txt")
-        
+
+        print("Comparing:")
+        print("   - {}".format(file_seeder))
+        print("   - {}".format(file_leecher))
         self.assertTrue(filecmp.cmp(file_seeder, file_leecher, False))
-        rmtree(dir1)
-        rmtree(dir2)
 
 
 if __name__ == '__main__':

@@ -5,6 +5,7 @@ Executing this module launches the download of the last Archlinux installation f
 way to see PyTo working.
 """
 import concurrent.futures
+import cProfile
 from tempfile import mkdtemp, gettempdir
 from os.path import join
 
@@ -55,4 +56,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    cProfile.run('main()', sort='tottime')

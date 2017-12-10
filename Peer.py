@@ -125,20 +125,20 @@ class Peer:
         self.reader = None
 
     def handle_message(self, message: Message):
-        # Maybe move this check somewhere more appropriate
+        # TODO: Maybe move this check somewhere more appropriate
         if not self.handshake_done:
             if isinstance(message, HandShake):
                 self.handshake_done = True
             else:
                 raise ValueError("Invalid message")
         else:
-            handle_name = '_handle_' + message.__class__.__name__
+            handler_name = '_handle_' + message.__class__.__name__
             try:
-                handle = getattr(self, handle_name)
+                handler = getattr(self, handler_name)
             except AttributeError:
-                pass
-            else:
-                handle(message)
+                self.logger.error("No handler found for message: {}".format(message))
+                raise NotImplemented("Missing handler for a Message subclass")
+            handler(message)
 
     def _handle_Choke(self, _: Choke):
         self.chokes_me = True
@@ -164,6 +164,18 @@ class Peer:
         except KeyError:
             raise ValueError("Received unrequested piece")
 
+    def _handle_KeepAlive(self, _: KeepAlive):
+        pass
+
+    def _handle_Request(self, _: Request):
+        pass
+
+    def _handle_Cancel(self, _: Cancel):
+        pass
+
+    def _handle_Port(self, _: Port):
+        pass
+
 
 # TODO: Cleanly end connection when the task is cancelled
 async def exchange(torrent,
@@ -181,7 +193,7 @@ async def exchange(torrent,
         return
 
     torrent.add_peer(p)
-    p.logger.info("new peer added!")
+    torrent.logger.info("new peer added!")
     if initiated:
         await p.write([
             HandShake(torrent.info_hash),
@@ -189,21 +201,45 @@ async def exchange(torrent,
         ])
 
     async for message in p.read():
+        # Update the peer with information from the message
         try:
             p.handle_message(message)
         except ValueError as e:
             p.logger.error("invalid message: {}", str(e))
             break
-        messages = await torrent.handle_message(message, initiated)
+        # Update the torrent with information from the message
+        torrent.update_from_message(message)
+
+        # Commit pieces to disk
+        if torrent.pieces_to_write:
+            await torrent.write_piece(loop)
+
+        # Build a suitable answer
+        messages = []
+        for m in torrent.build_answer_to(message, initiated):
+            if isinstance(m, Piece):
+                # Read disk to add missing info
+                messages.append(await torrent.complement(m))
+            else:
+                messages.append(m)
+
+        # Add requests
         messages += torrent.build_requests(p)
+
+        # Update peer with messages to be sent
         for m in messages:
             if isinstance(m, Request):
                 p.pending.add((m.piece_index, m.block_offset))
+
+        # Send messages
         try:
             await p.write(messages)
         except PeerWriteErrors as e:
             p.logger.debug("write() failed: {}".format(str(e)))
             break
+
+    torrent.remove_peer(p)
+    p.close()
 
 
 if __name__ == '__main__':

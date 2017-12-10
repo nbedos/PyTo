@@ -59,6 +59,7 @@ class Torrent:
         self.nbr_pieces = q + int(bool(r))
         self.pieces = set([])
         self.file = None
+        self.pieces_to_write = dict([])
 
         self.peers = dict([])
         self.blacklist = dict([])
@@ -107,10 +108,19 @@ class Torrent:
         self.file.seek(offset)
         return self.file.read(self.piece_length)
 
-    def write_piece(self, piece_index: int, piece: bytes):
-        self.logger.debug("writing piece #{}".format(piece_index))
+    def _seek_and_write(self, piece_index: int, piece: bytes):
         self.file.seek(piece_index * self.piece_length)
         self.file.write(piece)
+
+    async def write_piece(self, loop):
+        my_pieces_to_write = self.pieces_to_write.copy()
+        self.pieces_to_write = dict([])
+        for piece_index, piece in my_pieces_to_write.items():
+            self.logger.debug("writing piece #{}".format(piece_index))
+            await asyncio.wait([
+                loop.run_in_executor(None, self._seek_and_write, piece_index, piece)
+            ])
+
 
     def init_files(self, download_dir: str):
         """Create missing files, check existing ones"""
@@ -126,8 +136,6 @@ class Torrent:
             pieces = iter(lambda: f.read(self.piece_length), b"")
             for piece_index, piece in enumerate(pieces):
                 if self.hashes[piece_index] == sha1(piece).digest():
-                    # The bit at position piece_index is also the
-                    # r-th bit of the q-th byte. Set it to 1.
                     self.pieces.add(piece_index)
                 else:
                     reopen_read_write = True
@@ -170,107 +178,184 @@ class Torrent:
         if (p.ip, p.port) not in self.peers:
             self.peers[(p.ip, p.port)] = p
 
+    # TODO: implement remove_peer
+    def remove_peer(self, p):
+        pass
+
     def is_complete(self):
         self.logger.debug("missing pieces: {}".format(set(range(0, self.nbr_pieces)) - self.pieces))
         return self.pieces == set(range(0, self.nbr_pieces))
 
-    async def handle_message(self, message: Message, initiated: bool):
-        if isinstance(message, HandShake):
-            if self.info_hash == message.info_hash:
-                if not initiated:
-                    return [
-                        HandShake(self.info_hash),
-                        BitField(self.pieces, self.nbr_pieces)
-                    ]
-            else:
-                raise ValueError("Invalid HandShake message")
-        elif isinstance(message, Choke):
-            pass
-        elif isinstance(message, Unchoke):
-            pass
-        elif isinstance(message, Interested):
-            return [Unchoke()]
-        elif isinstance(message, NotInterested):
-            return [Choke()]
-        elif isinstance(message, Have):
-            try:
-                self.piece_rarity[message.piece_index] += 1
-            except KeyError:
-                self.piece_rarity[message.piece_index] = 1
-            self.piece_rarity_sorted = sorted(self.piece_rarity.items(), key=lambda x: x[1])
-        elif isinstance(message, BitField):
-            # Update rarity
-            for piece in message.pieces:
-                try:
-                    self.piece_rarity[piece] += 1
-                except KeyError:
-                    self.piece_rarity[piece] = 1
-            self.piece_rarity_sorted = sorted(self.piece_rarity.items(), key=lambda x: x[1])
+    def build_answer_to(self, message: Message, initiated: bool) -> List[Message]:
+        handler_name = '_build_answer_to_' + message.__class__.__name__
+        try:
+            handler = getattr(self, handler_name)
+        except AttributeError:
+            self.logger.error("No handler found for message: {}".format(message))
+            raise NotImplemented
+        return handler(message, initiated)
 
-            # Check is the peer has any interesting piece
-            requestable_pieces = (self.pieces ^ message.pieces) & message.pieces
-            if requestable_pieces:
-                return [Interested()]
-        elif isinstance(message, Request):
-            loop = asyncio.get_event_loop()
-            done, not_done = await asyncio.wait([loop.run_in_executor(None,
-                                                                      self.read_piece,
-                                                                      message.piece_index)])
-            results = [task.result() for task in done]
-            piece = results.pop()
-            block = piece[message.block_offset:message.block_offset+message.block_length]
+    def _build_answer_to_HandShake(self, message: HandShake, initiated) -> List[Message]:
+        if initiated:
+            return []
+        else:
             return [
-                Piece(len(block),
-                      message.piece_index,
-                      message.block_offset,
-                      block)
+                HandShake(self.info_hash),
+                BitField(self.pieces, self.nbr_pieces)
             ]
-        elif isinstance(message, Piece):
-            try:
-                blocks = self.pending[message.piece_index]
-                requests, block = blocks[message.block_offset]
-                if not requests:
-                    raise KeyError
-            except KeyError:
-                self.logger.error("Received unrequested block: piece #{} offset {})".format(
-                    message.piece_index, message.block_offset))
-                return []
 
-            # Block already received
-            if block:
-                return []
-            requests, _ = blocks[message.block_offset]
-            blocks[message.block_offset] = (requests, message.block)
-            # Otherwise we may have all the blocks for this piece
-            if all([block for _, block in blocks.values()]):
-                del self.pending[message.piece_index]
-                piece = b"".join([block for _, block in blocks.values()])
-                if self.hashes[message.piece_index] != sha1(piece).digest():
-                    self.logger.error("Hashing failed for piece #{}".format(
-                        message.piece_index))
-                    return []
-
-                self.logger.debug("Hashing succeeded for piece #{}".format(message.piece_index))
-                loop = asyncio.get_event_loop()
-
-                self.pieces.add(message.piece_index)
-
-                self.logger.debug("Update list of pieces: {}".format(self.pieces))
-
-                await asyncio.wait([
-                    loop.run_in_executor(None, self.write_piece, message.piece_index, piece)
-                ])
-
-                if self.is_complete():
-                    self.logger.debug("No more blocks to request")
-                    try:
-                        self.queue.put_nowait("EVENT_DOWNLOAD_COMPLETE")
-                    except asyncio.QueueFull:
-                        self.logger.warning("Queue full, could not write event")
-                    return [Have(message.piece_index)]
-
-                return [Have(message.piece_index)]
+    def _build_answer_to_Choke(self, message: Choke, _) -> List[Message]:
         return []
+
+    def _build_answer_to_Unchoke(self, message: Unchoke, _) -> List[Message]:
+        return []
+
+    def _build_answer_to_Interested(self, message: Interested, _) -> List[Message]:
+        # TODO: update peer status
+        return [Unchoke()]
+
+    def _build_answer_to_NotInterested(self, message: NotInterested, _) -> List[Message]:
+        # TODO: update peer status
+        return [Choke()]
+
+    def _build_answer_to_Have(self, message: Have, _) -> List[Message]:
+        return []
+
+    def _build_answer_to_BitField(self, message: BitField, _) -> List[Message]:
+        # Check if the peer has any interesting piece
+        requestable_pieces = (self.pieces ^ message.pieces) & message.pieces
+        if requestable_pieces:
+            return [Interested()]
+        else:
+            return []
+
+    def _build_answer_to_Request(self, message: Request, _) -> List[Message]:
+        block = b""
+        return [
+            Piece(16384,
+                  message.piece_index,
+                  message.block_offset,
+                  block)
+        ]
+
+    def _build_answer_to_Piece(self, message: Piece, _) -> List[Message]:
+        if message.piece_index in self.pieces_to_write:
+            return [Have(message.piece_index)]
+        else:
+            return []
+
+    def _build_answer_to_Port(self, message: Port, _) -> List[Message]:
+        return []
+
+    def _build_answer_to_Cancel(self, message: Cancel, _) -> List[Message]:
+        return []
+
+    def _build_answer_to_KeepAlive(self, message: KeepAlive, _) -> List[Message]:
+        return []
+
+    def update_from_message(self, message: Message):
+        handler_name = '_update_from_' + message.__class__.__name__
+        try:
+            handler = getattr(self, handler_name)
+        except AttributeError:
+            self.logger.error("No handler found for message: {}".format(message))
+            raise NotImplemented
+        handler(message)
+
+    def _update_from_HandShake(self, message: HandShake):
+        if self.info_hash != message.info_hash:
+            raise ValueError("Invalid HandShake message")
+
+    def _update_from_Choke(self, message: Choke):
+        pass
+
+    def _update_from_Unchoke(self, message: Unchoke):
+        pass
+
+    def _update_from_Interested(self, message: Interested):
+        pass
+
+    def _update_from_NotInterested(self, message: NotInterested):
+        pass
+
+    def _update_from_Have(self, message: Have):
+        try:
+            self.piece_rarity[message.piece_index] += 1
+        except KeyError:
+            self.piece_rarity[message.piece_index] = 1
+        self.piece_rarity_sorted = sorted(self.piece_rarity.items(), key=lambda x: x[1])
+
+    def _update_from_BitField(self, message: BitField):
+        # Update rarity
+        for piece in message.pieces:
+            try:
+                self.piece_rarity[piece] += 1
+            except KeyError:
+                self.piece_rarity[piece] = 1
+        self.piece_rarity_sorted = sorted(self.piece_rarity.items(), key=lambda x: x[1])
+
+    def _update_from_Request(self, message: Request):
+        pass
+
+    def _update_from_Piece(self, message: Piece):
+        try:
+            blocks = self.pending[message.piece_index]
+            requests, block = blocks[message.block_offset]
+            if not requests:
+                raise KeyError
+        except KeyError:
+            self.logger.error("Received unrequested block: piece #{} offset {})".format(
+                message.piece_index, message.block_offset))
+            raise ValueError("Received unrequest block")
+
+        # TODO: still useful ?
+        if block:
+            return
+
+        blocks[message.block_offset] = (requests, message.block)
+        # Check if we've got all the blocks for this piece
+        if all([block for _, block in blocks.values()]):
+            piece = b"".join([block for _, block in blocks.values()])
+            if self.hashes[message.piece_index] != sha1(piece).digest():
+                self.logger.error("Hashing failed for piece #{}".format(
+                    message.piece_index))
+                raise ValueError("Invalid piece")
+
+            self.logger.debug("Hashing succeeded for piece #{}".format(message.piece_index))
+            self.pieces_to_write[message.piece_index] = piece
+            self.pieces.add(message.piece_index)
+            self.logger.debug("Updated list of pieces: {}".format(self.pieces))
+            del self.pending[message.piece_index]
+
+            if self.is_complete():
+                # TODO: reopen files in read-only mode
+                self.logger.debug("Download complete. Nothing more to request")
+                try:
+                    self.queue.put_nowait("EVENT_DOWNLOAD_COMPLETE")
+                except asyncio.QueueFull:
+                    self.logger.warning("Queue full, could not write event")
+
+    def _update_from_Port(self, message: Port):
+        pass
+
+    def _update_from_Cancel(self, message: Cancel):
+        pass
+
+    def _update_from_KeepAlive(self, message: KeepAlive):
+        pass
+
+    async def complement(self, message: Piece) -> Piece:
+        loop = asyncio.get_event_loop()
+        done, not_done = await asyncio.wait([loop.run_in_executor(None,
+                                                                  self.read_piece,
+                                                                  message.piece_index)])
+        results = [task.result() for task in done]
+        piece = results.pop()
+        block = piece[message.block_offset:message.block_offset+message.block_length]
+        return Piece(len(block),
+                     message.piece_index,
+                     message.block_offset,
+                     block)
 
     def build_requests(self, peer: Peer, block_length: int=16384):
         """Build a list of request to be sent to the peer
@@ -324,9 +409,20 @@ class Torrent:
                 peer.writer.close()
 
 
-def accept_connection(torrent: Torrent, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+# download() awaits torrent.futures... but when a new connection is accepted, download() may
+# still keep waiting on the old version of torrent.futures (which does not include
+# the new peer). So we need download() to reevaluate torrent.futures as soon as a new peer is
+# added. Otherwise we may miss something, such as exchange() failing because of an exception.
+# DONE: Temporary fix: download waits on a global event which is set when a peer connects
+# TODO: Long term fix: Setup network I/O with sockets to get rid off the callback accept_connection:
+# connections will simply be accepted in download()
+def accept_connection(torrent: Torrent,
+                      reader: asyncio.StreamReader,
+                      writer: asyncio.StreamWriter,
+                      event: asyncio.Event):
     f = asyncio.ensure_future(exchange(torrent, reader=reader, writer=writer, initiated=False))
     torrent.futures[f] = True
+    event.set()
 
 
 def init(torrent_file: str, download_dir: str):
@@ -336,18 +432,24 @@ def init(torrent_file: str, download_dir: str):
     return torrent
 
 
+# TODO: Dimanche --> s'arranger pour tuer l'évènement quand on a besoin de sortir de download()
 async def download(loop: asyncio.AbstractEventLoop, torrent: Torrent, listen_port: int):
     # start_server will set up a server listening on the given port and return
     # as soon as it is done. The value returned is an AbstractServer instance.
     # Then, handle_connection will be called to handle every incoming
     # connection.
-    f = asyncio.ensure_future(
-        asyncio.start_server(lambda r, w: accept_connection(torrent, r, w),
+    f_server = asyncio.ensure_future(
+        asyncio.start_server(lambda r, w: accept_connection(torrent, r, w, NEW_PEER_EVENT),
                              host='localhost',
                              port=listen_port,
                              loop=loop)
     )
-    torrent.futures[f] = True
+    NEW_PEER_EVENT = asyncio.Event()
+    torrent.futures[f_server] = True
+
+    NEW_PEER_EVENT.clear()
+    f_event = asyncio.ensure_future(NEW_PEER_EVENT.wait())
+    torrent.futures[f_event] = False
 
     for ip, port in torrent.get_peers():
         f = asyncio.ensure_future(exchange(torrent, ip=ip, port=port, initiated=True))
@@ -362,20 +464,33 @@ async def download(loop: asyncio.AbstractEventLoop, torrent: Torrent, listen_por
         for item in done:
             try:
                 result = item.result()
+                print(torrent.futures)
             # We catch ALL exceptions here, otherwise one of our futures may fail silently
+            except asyncio.CancelledError:
+                pass
             except Exception:
                 torrent.logger.exception("Future failed")
                 torrent.stop()
-            else:
-                if isinstance(result, asyncio.AbstractServer):
-                    torrent.server = result
-                    f = asyncio.ensure_future(torrent.server.wait_closed())
-                    torrent.futures[f] = False
-                    try:
-                        torrent.queue.put_nowait("EVENT_ACCEPT_CONNECTIONS")
-                        torrent.logger.info("EVENT_ACCEPT_CONNECTIONS")
-                    except asyncio.QueueFull:
-                        torrent.logger.warning("Queue full, could not write event")
+                raise
+
+            if item == f_server:
+                torrent.server = result
+                f = asyncio.ensure_future(torrent.server.wait_closed())
+                torrent.futures[f] = False
+                try:
+                    torrent.queue.put_nowait("EVENT_ACCEPT_CONNECTIONS")
+                    torrent.logger.info("EVENT_ACCEPT_CONNECTIONS")
+                except asyncio.QueueFull:
+                    torrent.logger.warning("Queue full, could not write event")
+            elif item == f_event:
+                # If the server is still running, reset the event
+                if torrent.server.sockets is not None:
+                    NEW_PEER_EVENT.clear()
+                    f_event = asyncio.ensure_future(NEW_PEER_EVENT.wait())
+                    torrent.futures[f_event] = False
+
+            if torrent.server.sockets is None:
+                f_event.cancel()
 
             del torrent.futures[item]
 

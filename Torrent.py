@@ -301,15 +301,11 @@ class Torrent:
         try:
             blocks = self.pending[message.piece_index]
             requests, block = blocks[message.block_offset]
-            if not requests:
+            if (not requests) or block:
                 raise KeyError
         except KeyError:
-            self.logger.error("Received unrequested block: piece #{} offset {})".format(
+            self.logger.debug("block already downloaded (piece #{}, offset {})".format(
                 message.piece_index, message.block_offset))
-            raise ValueError("Received unrequest block")
-
-        # TODO: still useful ?
-        if block:
             return
 
         blocks[message.block_offset] = (requests, message.block)

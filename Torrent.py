@@ -540,7 +540,7 @@ def next_request(torrent_pending: Dict[int, Dict[int, Tuple[Set[datetime.datetim
     return piece_index, block_offset
 
 
-def _split(l: list, n: int) -> list:
+def _split(l: List, n: int) -> List[List]:
     """Split the list l in chunks of size n"""
     if n < 0:
         raise ValueError("n must be >= 0")

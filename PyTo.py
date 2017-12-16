@@ -18,7 +18,7 @@ arch_torrent = "./data/torrent files/archlinux-2017.12.01-x86_64.iso.torrent"
 def main():
     logfile = join(gettempdir(), "PyTo.log")
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format="[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d] "
                "%(message)s",
         datefmt="%H:%M:%S",

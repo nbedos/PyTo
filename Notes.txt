@@ -12,3 +12,25 @@ would not know about the failure since we did not wait for this future.
 What to do : Wait for all the futures that have been scheduled and evaluate their results. If you
 don't, make sure that a future silently failing would not prevent another of your futures to
 complete its task.
+
+
+MAP() OR FOR LOOP
+
+map() should probably not be used if what we are interesting in is the side effect of a
+function. For example map(print, ["Hey"]*5) will return a map object and not print anything until
+the map object is evaluated. A simple for loop is better.
+
+
+SET() AND {}
+
+Beware of the difference between set() and {}:
+    >>> s = set(range(10))
+    >>> s
+    {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+    >>> t = {range(10)}
+    >>> t
+    {range(0, 10)}
+
+From the official doc: the content of a set defined by the construct {...} is "either a sequence of
+expressions or a comprehension". On the other hand, set() may be called with an iterator to
+initialize the set.

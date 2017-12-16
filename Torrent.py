@@ -4,14 +4,12 @@ Torrent module
 An instance of the Torrent class represents a Torrent file
 """
 import asyncio
-import datetime
 import logging
 import os
 import socket
 import urllib.parse
 import urllib.request
 from hashlib import sha1
-from random import SystemRandom
 from struct import unpack, iter_unpack, error as struct_error
 from typing import Iterator, Tuple, Union, List, Set, Dict
 
@@ -19,12 +17,8 @@ from BEncoding import bdecode, bencode
 from Messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, \
                      BitField, Request, Piece, Cancel, Port, HandShake
 from Peer import Peer, exchange
+from PieceManager import PieceManager
 
-
-RARITY_PERCENT: int = 20
-ENDGAME_PERCENT: int = 90
-MAX_PENDING_REQUESTS: int = 4
-REQUEST_TIMEOUT: int = 10
 
 module_logger = logging.getLogger(__name__)
 
@@ -36,44 +30,25 @@ class TorrentAdapter(logging.LoggerAdapter):
 
 
 class Torrent:
-    """Represent a Torrent file
-
-    Attributes:
-        - announce: announce URL of the tracker
-        - name: suggested filename for the downloaded file
-        - info_hash: SHA1 hash of the info dictionary in the torrent file
-        - hashes: SHA1 hash of each piece of the torrent
-        - piece_length: length in bytes of a piece
-        - length: length in bytes of the file
-    """
+    """Represent a Torrent file"""
     def __init__(self, announce: str, name: str, info_hash: bytes, hashes: List[bytes],
                  piece_length: int, length: int):
         self.announce = announce
         self.name = _sanitize(name)
         self.info_hash = info_hash
         self.hashes = hashes
-        if not (0 < piece_length <= length):
-            raise ValueError("Lengths must verify 0 < piece_length <= length")
         self.length = length
-        self.piece_length = piece_length
-        q, r = divmod(self.length, self.piece_length)
-        self.nbr_pieces = q + int(bool(r))
-        self.pieces = set([])
+        self.piece_manager = PieceManager(length, piece_length)
         self.file = None
-        self.pieces_to_write = dict([])
 
+        self.socket = None
         self.peers = dict([])
         self.blacklist = dict([])
         self.pending = dict([])
-        # TODO: remove pieces from rarity data structures when a peer is disconnected
-        self.piece_rarity = dict([])
-        self.piece_rarity_sorted = []
-
-        self.logger = TorrentAdapter(module_logger, {'name': self.name})
 
         self.futures = set([])
-        self.socket = None
 
+        self.logger = TorrentAdapter(module_logger, {'name': self.name})
         self.queue = asyncio.Queue(50)
 
     @classmethod
@@ -98,29 +73,31 @@ class Torrent:
              "    info_hash: {}".format(self.info_hash),
              "     announce: {}".format(self.announce),
              "       length: {}".format(self.length),
-             " piece_length: {}".format(self.piece_length),
-             "   nbr_pieces: {}".format(self.nbr_pieces),
-             "       pieces: {}".format(self.pieces),
+             " piece_length: {}".format(self.piece_manager.default_piece_length),
+             "   nbr_pieces: {}".format(self.piece_manager.nbr_pieces),
+             "       pieces: {}".format(self.piece_manager.pieces),
         ])
 
     def read_piece(self, piece_index: int) -> bytes:
         self.logger.debug("reading piece #{}".format(piece_index))
-        offset = piece_index * self.piece_length
+        offset = piece_index * self.piece_manager.default_piece_length
         self.file.seek(offset)
-        return self.file.read(self.piece_length)
+        current_piece_length = self.piece_manager.piece_length(piece_index)
+        return self.file.read(current_piece_length)
 
     def _seek_and_write(self, piece_index: int, piece: bytes):
-        self.file.seek(piece_index * self.piece_length)
+        self.file.seek(piece_index * self.piece_manager.default_piece_length)
         self.file.write(piece)
 
     async def write_piece(self, loop):
-        my_pieces_to_write = self.pieces_to_write.copy()
-        self.pieces_to_write = dict([])
+        my_pieces_to_write = self.piece_manager.pieces_to_write.copy()
+        self.piece_manager.pieces_to_write = dict([])
         for piece_index, piece in my_pieces_to_write.items():
             self.logger.debug("writing piece #{}".format(piece_index))
-            await asyncio.wait([
-                loop.run_in_executor(None, self._seek_and_write, piece_index, piece)
-            ])
+            await asyncio.wait_for(
+                loop.run_in_executor(None, self._seek_and_write, piece_index, piece),
+                timeout=None
+            )
 
     def init_files(self, download_dir: str):
         """Create missing files, check existing ones"""
@@ -133,10 +110,10 @@ class Torrent:
                 print(os.stat(torrent_file).st_size, self.length)
 
                 raise ValueError("The file size does not match with the torrent size")
-            pieces = iter(lambda: f.read(self.piece_length), b"")
+            pieces = iter(lambda: f.read(self.piece_manager.default_piece_length), b"")
             for piece_index, piece in enumerate(pieces):
                 if self.hashes[piece_index] == sha1(piece).digest():
-                    self.pieces.add(piece_index)
+                    self.piece_manager.register_piece_owned(piece_index)
                 else:
                     reopen_read_write = True
         except FileNotFoundError:
@@ -173,63 +150,62 @@ class Torrent:
         if (p.ip, p.port) in self.blacklist:
             raise ValueError("This peer is blacklisted")
 
-        # TODO: Is there a way to get an exception when inserting the key if it is already in the
-        # dictionary ?
         if (p.ip, p.port) not in self.peers:
             self.peers[(p.ip, p.port)] = p
 
-    # TODO: implement remove_peer
-    def remove_peer(self, p):
-        pass
+    def remove_peer(self, p: Peer):
+        self.piece_manager.remove_peer(p.id, p.pieces)
+        del self.peers[(p.ip, p.port)]
 
     def is_complete(self):
-        self.logger.debug("missing pieces: {}".format(set(range(0, self.nbr_pieces)) - self.pieces))
-        return self.pieces == set(range(0, self.nbr_pieces))
+        all_pieces = set(range(self.piece_manager.nbr_pieces))
+        self.logger.debug("missing pieces: {}".format(all_pieces - self.piece_manager.pieces))
+        return self.piece_manager.pieces == all_pieces
 
-    def build_answer_to(self, message: Message, initiated: bool) -> List[Message]:
+    def build_answer_to(self, message: Message, peer_id: int, initiated: bool) -> List[Message]:
         handler_name = '_build_answer_to_' + message.__class__.__name__
         try:
             handler = getattr(self, handler_name)
         except AttributeError:
             self.logger.error("No handler found for message: {}".format(message))
             raise NotImplemented
-        return handler(message, initiated)
+        return handler(message, initiated, peer_id)
 
-    def _build_answer_to_HandShake(self, message: HandShake, initiated) -> List[Message]:
+    def _build_answer_to_HandShake(self, message: HandShake, peer_id: int, initiated) -> List[Message]:
         if initiated:
             return []
         else:
             return [
                 HandShake(self.info_hash),
-                BitField(self.pieces, self.nbr_pieces)
+                BitField(self.piece_manager.pieces, self.piece_manager.nbr_pieces)
             ]
 
-    def _build_answer_to_Choke(self, message: Choke, _) -> List[Message]:
+    def _build_answer_to_Choke(self, message: Choke, peer_id: int, _) -> List[Message]:
         return []
 
-    def _build_answer_to_Unchoke(self, message: Unchoke, _) -> List[Message]:
+    def _build_answer_to_Unchoke(self, message: Unchoke, peer_id: int, _) -> List[Message]:
         return []
 
-    def _build_answer_to_Interested(self, message: Interested, _) -> List[Message]:
+    def _build_answer_to_Interested(self, message: Interested, peer_id: int, _) -> List[Message]:
         # TODO: update peer status
         return [Unchoke()]
 
-    def _build_answer_to_NotInterested(self, message: NotInterested, _) -> List[Message]:
+    def _build_answer_to_NotInterested(self, message: NotInterested, peer_id: int, _) -> List[Message]:
         # TODO: update peer status
         return [Choke()]
 
-    def _build_answer_to_Have(self, message: Have, _) -> List[Message]:
+    def _build_answer_to_Have(self, message: Have, peer_id: int, _) -> List[Message]:
         return []
 
-    def _build_answer_to_BitField(self, message: BitField, _) -> List[Message]:
+    def _build_answer_to_BitField(self, message: BitField, peer_id: int, _) -> List[Message]:
         # Check if the peer has any interesting piece
-        requestable_pieces = (self.pieces ^ message.pieces) & message.pieces
-        if requestable_pieces:
+        try:
+            self.piece_manager.next_block(message.pieces, peer_id)
             return [Interested()]
-        else:
+        except IndexError:
             return []
 
-    def _build_answer_to_Request(self, message: Request, _) -> List[Message]:
+    def _build_answer_to_Request(self, message: Request, peer_id: int, _) -> List[Message]:
         block = b""
         return [
             Piece(16384,
@@ -238,90 +214,69 @@ class Torrent:
                   block)
         ]
 
-    def _build_answer_to_Piece(self, message: Piece, _) -> List[Message]:
-        if message.piece_index in self.pieces_to_write:
+    def _build_answer_to_Piece(self, message: Piece, peer_id: int, _) -> List[Message]:
+        if message.piece_index in self.piece_manager.pieces:
             return [Have(message.piece_index)]
         else:
             return []
 
-    def _build_answer_to_Port(self, message: Port, _) -> List[Message]:
+    def _build_answer_to_Port(self, message: Port, peer_id: int, _) -> List[Message]:
         return []
 
-    def _build_answer_to_Cancel(self, message: Cancel, _) -> List[Message]:
+    def _build_answer_to_Cancel(self, message: Cancel, peer_id: int, _) -> List[Message]:
         return []
 
-    def _build_answer_to_KeepAlive(self, message: KeepAlive, _) -> List[Message]:
+    def _build_answer_to_KeepAlive(self, message: KeepAlive, peer_id: int, _) -> List[Message]:
         return []
 
-    def update_from_message(self, message: Message):
+    def update_from_message(self, message: Message, peer_id: int):
         handler_name = '_update_from_' + message.__class__.__name__
         try:
             handler = getattr(self, handler_name)
         except AttributeError:
             self.logger.error("No handler found for message: {}".format(message))
             raise NotImplemented
-        handler(message)
+        handler(message, peer_id)
 
-    def _update_from_HandShake(self, message: HandShake):
+    def _update_from_HandShake(self, message: HandShake, peer_id: int):
         if self.info_hash != message.info_hash:
             raise ValueError("Invalid HandShake message")
 
-    def _update_from_Choke(self, message: Choke):
+    def _update_from_Choke(self, message: Choke, peer_id: int):
         pass
 
-    def _update_from_Unchoke(self, message: Unchoke):
+    def _update_from_Unchoke(self, message: Unchoke, peer_id: int):
         pass
 
-    def _update_from_Interested(self, message: Interested):
+    def _update_from_Interested(self, message: Interested, peer_id: int):
         pass
 
-    def _update_from_NotInterested(self, message: NotInterested):
+    def _update_from_NotInterested(self, message: NotInterested, peer_id: int):
         pass
 
-    def _update_from_Have(self, message: Have):
-        try:
-            self.piece_rarity[message.piece_index] += 1
-        except KeyError:
-            self.piece_rarity[message.piece_index] = 1
-        self.piece_rarity_sorted = sorted(self.piece_rarity.items(), key=lambda x: x[1])
+    def _update_from_Have(self, message: Have, peer_id: int):
+        self.piece_manager.register_peer_has(message.piece_index)
 
-    def _update_from_BitField(self, message: BitField):
-        # Update rarity
-        for piece in message.pieces:
-            try:
-                self.piece_rarity[piece] += 1
-            except KeyError:
-                self.piece_rarity[piece] = 1
-        self.piece_rarity_sorted = sorted(self.piece_rarity.items(), key=lambda x: x[1])
+    def _update_from_BitField(self, message: BitField, peer_id: int):
+        for piece_index in message.pieces:
+            self.piece_manager.register_peer_has(piece_index)
 
-    def _update_from_Request(self, message: Request):
+    def _update_from_Request(self, message: Request, peer_id: int):
         pass
 
-    def _update_from_Piece(self, message: Piece):
-        try:
-            blocks = self.pending[message.piece_index]
-            requests, block = blocks[message.block_offset]
-            if (not requests) or block:
-                raise KeyError
-        except KeyError:
-            self.logger.debug("block already downloaded (piece #{}, offset {})".format(
-                message.piece_index, message.block_offset))
-            return
-
-        blocks[message.block_offset] = (requests, message.block)
-        # Check if we've got all the blocks for this piece
-        if all([block for _, block in blocks.values()]):
-            piece = b"".join([block for _, block in blocks.values()])
+    def _update_from_Piece(self, message: Piece, peer_id: int):
+        self.piece_manager.register_block_received(message.piece_index,
+                                                   message.block_offset,
+                                                   message.block,
+                                                   peer_id)
+        if message.piece_index in self.piece_manager.pieces_to_write:
+            piece = self.piece_manager.pieces_to_write[message.piece_index]
             if self.hashes[message.piece_index] != sha1(piece).digest():
-                self.logger.error("Hashing failed for piece #{}".format(
-                    message.piece_index))
+                self.logger.error("Hashing failed for piece #{}".format(message.piece_index))
+                # TODO: remove the piece from the piece_manager
                 raise ValueError("Invalid piece")
 
             self.logger.debug("Hashing succeeded for piece #{}".format(message.piece_index))
-            self.pieces_to_write[message.piece_index] = piece
-            self.pieces.add(message.piece_index)
-            self.logger.debug("Updated list of pieces: {}".format(self.pieces))
-            del self.pending[message.piece_index]
 
             if self.is_complete():
                 # TODO: reopen files in read-only mode
@@ -331,75 +286,50 @@ class Torrent:
                 except asyncio.QueueFull:
                     self.logger.warning("Queue full, could not write event")
 
-    def _update_from_Port(self, message: Port):
+    def _update_from_Port(self, message: Port, peer_id: int):
         pass
 
-    def _update_from_Cancel(self, message: Cancel):
+    def _update_from_Cancel(self, message: Cancel, peer_id: int):
         pass
 
-    def _update_from_KeepAlive(self, message: KeepAlive):
+    def _update_from_KeepAlive(self, message: KeepAlive, peer_id: int):
         pass
 
     async def complement(self, message: Piece) -> Piece:
         loop = asyncio.get_event_loop()
-        done, not_done = await asyncio.wait([loop.run_in_executor(None,
-                                                                  self.read_piece,
-                                                                  message.piece_index)])
-        results = [task.result() for task in done]
-        piece = results.pop()
+        future = loop.run_in_executor(None, self.read_piece, message.piece_index)
+        piece = await asyncio.wait_for(future, timeout=None)
         block = piece[message.block_offset:message.block_offset+message.block_length]
         return Piece(len(block),
                      message.piece_index,
                      message.block_offset,
                      block)
 
-    def build_requests(self, peer: Peer, block_length: int=16384):
+    def build_requests(self, peer: Peer):
         """Build a list of request to be sent to the peer
 
         Side effect: update the list of pending piece of the Torrent instance"""
         if peer.chokes_me:
             return []
 
-        l = []
-        assert(0 <= ENDGAME_PERCENT <= 100)
-        endgame_threshold = self.nbr_pieces * ENDGAME_PERCENT // 100
-        endgame = len(self.pieces) >= endgame_threshold
+        reqs = []
         for _ in range(len(peer.pending), peer.pending_target, 1):
             try:
-                piece_index, block_offset = next_request(self.pending,
-                                                         self.pieces,
-                                                         peer.pieces,
-                                                         peer.pending,
-                                                         self.piece_rarity_sorted,
-                                                         endgame)
+                piece_index, block_offset = self.piece_manager.next_block(peer.pieces, peer.id)
             except IndexError:
                 break
 
-            # Compute the length of the piece since the last one may be shorter
-            if piece_index == self.nbr_pieces - 1:
-                piece_length = self.length - self.piece_length * (self.nbr_pieces - 1)
-            else:
-                piece_length = self.piece_length
-
-            # Update the list of pending pieces of the Torrent instance
-            if piece_index not in self.pending:
-                q, r = divmod(piece_length, block_length)
-                nbr_blocks = q + int(bool(r))
-                self.pending[piece_index] = {
-                    (i * block_length): (set(), b"") for i in range(0, nbr_blocks)
-                }
-            requests, _ = self.pending[piece_index][block_offset]
-            requests.add(datetime.datetime.now())
-
-            l.append(Request(piece_index, block_offset, block_length))
-        return l
+            self.piece_manager.register_block_requested(piece_index, block_offset, peer.id)
+            block_length = self.piece_manager.block_length(piece_index, block_offset)
+            reqs.append(Request(piece_index, block_offset, block_length))
+        return reqs
 
     def stop(self):
         for f in self.futures:
             f.cancel()
         print(self.futures)
 
-    #TODO: Why does test_Torrent fails if we close all sockets ?
+    # TODO: Why does test_Torrent fails if we close all sockets ?
     # "OSError: [WinError 10038] Une opération a été tentée sur autre chose qu’un socket"
     def close(self):
         self.queue.put_nowait("EVENT_END")
@@ -478,69 +408,7 @@ async def download(loop: asyncio.AbstractEventLoop, torrent: Torrent, listen_por
     torrent.close()
 
 
-def next_request(torrent_pending: Dict[int, Dict[int, Tuple[Set[datetime.datetime], bytes]]],
-                 torrent_pieces:  Set[int],
-                 peer_pieces:     Set[int],
-                 peer_pending:    Set[Tuple[int, int]],
-                 rarity:          List[Tuple[int, int]],
-                 endgame:         bool) -> Tuple[int, int]:
-    """Choose the next block to download and return the corresponding Request message
-
-    Raise IndexError if no block is eligible for download
-
-    This function uses the following constants:
-        - RARITY_PERCENT: When choosing a rare piece, pick at random among the RARITY_PERCENT
-        rarest pieces owned by the peer
-        - ENDGAME_PERCENT: Enter endgame mode if at least ENDGAME_PERCENT of the pieces have
-        been downloaded
-        - MAX_PENDING_REQUESTS: Maximum number of pending requests for a single block. Requests
-        which have timed out are not taken into account
-        - REQUEST_TIMEOUT: Requests lasting longer than REQUEST_TIMEOUT are ignored when
-        counting pending requests
-    """
-    candidates: Set[Tuple[int, int]] = set()
-    now = datetime.datetime.now()
-
-    def request_timed_out(t: datetime.datetime):
-        return (t - now).total_seconds() > REQUEST_TIMEOUT
-
-    # Choice #1: Pick among the missing blocks of an incomplete piece
-    # Requests dating from more than REQUEST_TIMEOUT seconds ago are ignored
-    for piece in set(torrent_pending) & peer_pieces:
-        for offset, (requests, block) in torrent_pending[piece].items():
-            if not block:
-                if (not requests) or all(map(request_timed_out, requests)):
-                    candidates.add((piece, offset))
-
-    # Choice #2: Pick the first block of one of the rarest pieces
-    if not candidates:
-        # Exclude pieces which have been downloaded and pieces which have been requested
-        interesting_pieces = peer_pieces - torrent_pieces - set(torrent_pending)
-        peer_rarity = [(p, r) for p, r in rarity if p in interesting_pieces]
-        assert (0 < RARITY_PERCENT <= 100)
-        # Keep RARITY_PERCENT of the rarest pieces
-        nbr_rare_pieces = max(1, len(peer_rarity) * RARITY_PERCENT // 100)
-        candidates = set((piece, 0) for piece, _ in peer_rarity[:nbr_rare_pieces])
-
-    # Choice #3: Endgame mode. Pick a block of an incomplete piece which has already been
-    # requested but never received, unless there are already MAX_PENDING_REQUESTS requests
-    # for that block.
-    if not candidates and endgame:
-        for piece in set(torrent_pending) & peer_pieces:
-            for offset, (requests, block) in torrent_pending[piece].items():
-                if (not block) and (piece, offset) not in peer_pending:
-                    pending_requests = [r for r in requests if not request_timed_out(r)]
-                    if len(pending_requests) < MAX_PENDING_REQUESTS:
-                        candidates.add((piece, offset))
-
-    if not candidates:
-        raise IndexError("No block eligible for request")
-
-    piece_index, block_offset = SystemRandom().choice(list(candidates))
-    return piece_index, block_offset
-
-
-def _split(l: List, n: int) -> List[List]:
+def _split(l: List, n: int) -> List:
     """Split the list l in chunks of size n"""
     if n < 0:
         raise ValueError("n must be >= 0")
@@ -557,7 +425,7 @@ def _sanitize(filename: str) -> str:
     return "".join([c for c in filename if c.isalnum() or c in allowed_characters]).rstrip()
 
 
-def _decode_ipv4(buffer: bytes) -> (str, int):
+def _decode_ipv4(buffer: bytes) -> Tuple[str, int]:
     try:
         ip_str, port = unpack(">4sH", buffer)
         ip = ".".join([str(n) for n, in iter_unpack(">B", ip_str)])

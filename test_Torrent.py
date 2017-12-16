@@ -10,102 +10,8 @@ from tempfile import mkdtemp
 from unittest import TestCase
 from typing import List
 
-from Torrent import Torrent, next_request, init, download
+from Torrent import Torrent, init, download
 from Peer import Peer
-
-
-class TestTorrentFunctions(TestCase):
-    def test_next_request(self):
-        now = datetime.datetime.now()
-        with self.subTest(case="Piece pending: request the missing block"):
-            piece_index, block_offset = next_request(torrent_pending={0: {0: ({now}, b""),
-                                                                          1: (set(), b"")}
-                                                                      },
-                                                     torrent_pieces=set(),
-                                                     peer_pieces={0},
-                                                     peer_pending=set(),
-                                                     rarity=[(0, 1)],
-                                                     endgame=True)
-            self.assertEqual((piece_index, block_offset), (0, 1))
-
-        with self.subTest(case="No pending piece: request the rarest piece"):
-            piece_index, block_offset = next_request(torrent_pending={},
-                                                     torrent_pieces=set(),
-                                                     peer_pieces={0, 1},
-                                                     peer_pending=set(),
-                                                     rarity=[(1, 1), (0, 2)],
-                                                     endgame=True)
-            self.assertEqual((piece_index, block_offset), (1, 0))
-
-        with self.subTest(case="All pieces requested or downloaded: add a request for a piece"):
-            piece_index, block_offset = next_request(torrent_pending={1: {0: ({now}, b"")},
-                                                                      2: {0: ({now}, b"")},
-                                                                      3: {0: ({now}, b"")}},
-                                                     torrent_pieces=set(),
-                                                     peer_pieces={1, 2, 3},
-                                                     peer_pending={(1, 0), (2, 0)},
-                                                     rarity=[(1, 1), (2, 1), (3, 2)],
-                                                     endgame=True)
-            # The piece re-requested must not be in peer_pending so it has to be piece #3
-            self.assertEqual((piece_index, block_offset), (3, 0))
-
-        with self.subTest(case="Peer has no pieces: fail"):
-            with self.assertRaises(IndexError):
-                next_request(torrent_pending={},
-                             torrent_pieces=set(),
-                             peer_pieces=set(),
-                             peer_pending=set(),
-                             rarity=[],
-                             endgame=True)
-
-        with self.subTest(case="Peer has no interesting piece: fail"):
-            with self.assertRaises(IndexError):
-                next_request(torrent_pending={},
-                             torrent_pieces={1, 3, 5},
-                             peer_pieces={1, 3, 5},
-                             peer_pending=set(),
-                             rarity=[(1, 1), (3, 1), (5, 1)],
-                             endgame=True)
-
-        with self.subTest(case="Interesting pieces already requested to the peer: fail"):
-            with self.assertRaises(IndexError):
-                next_request(torrent_pending={1: {0: ({now}, b"")},
-                                              2: {0: ({now}, b"")},
-                                              3: {0: ({now}, b"")}},
-                             torrent_pieces=set(),
-                             peer_pieces={1, 2, 3},
-                             peer_pending={(1, 0), (2, 0), (3, 0)},
-                             rarity=[(1, 1), (2, 1), (3, 1)],
-                             endgame=True)
-
-        with self.subTest(case="Interesting pieces already requested to another peer: fail"):
-            with self.assertRaises(IndexError):
-                next_request(torrent_pending={5: {0: ({now}, b"")}},
-                             torrent_pieces={0, 1, 2, 3, 4},
-                             peer_pieces={5},
-                             peer_pending=set(),
-                             rarity=[(1, 1), (2, 1), (3, 1), (4, 1), (5, 2)],
-                             endgame=False)
-
-        with self.subTest(case="Request all blocks of a file"):
-            piece_length = 5
-            length = 25
-            t = Torrent("", "", b"", [], piece_length, length)
-            p = Peer()
-            p.pieces = set(range(0, length, piece_length))
-            t.piece_rarity = [(piece, 1) for piece in p.pieces]
-            t.piece_rarity_sorted = sorted(t.piece_rarity)
-            p.chokes_me = False
-            t.add_peer(p)
-
-            result = set()
-            requests = t.build_requests(p, 1)
-            while requests:
-                for request in requests:
-                    result.add((request.piece_index, request.block_offset))
-                requests = t.build_requests(p, 1)
-
-            self.assertEqual(result, set([(p, b) for p in p.pieces for b in range(0, piece_length)]))
 
 
 class TestLocalDownload(TestCase):
@@ -204,4 +110,5 @@ class TestLocalDownload(TestCase):
 
 
 if __name__ == '__main__':
-        unittest.main()
+        import cProfile
+        cProfile.run('unittest.main()', sort='tottime')

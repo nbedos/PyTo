@@ -4,7 +4,6 @@ Peer module
 An instance of the Peer class represents a member of the network
 """
 import asyncio
-import datetime
 import logging
 import socket
 
@@ -12,18 +11,22 @@ from Messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterest
                      BitField, Request, Piece, Cancel, Port, HandShake
 
 from typing import List, Union, AsyncIterable
+
 PeerConnectErrors = (ConnectionRefusedError,
                      ConnectionAbortedError,
                      ConnectionError,
                      ConnectionResetError,
                      TimeoutError,
-                     OSError)
+                     OSError,
+                     asyncio.TimeoutError)
 
 PeerWriteErrors = (ConnectionResetError,)
 
 
 module_logger = logging.getLogger(__name__)
 
+REQUEST_TIMEOUT = 10
+KEEPALIVE_TIMEOUT = 120
 
 class PeerAdapter(logging.LoggerAdapter):
     """Add the port and ip of the Peer to logger messages"""
@@ -32,7 +35,12 @@ class PeerAdapter(logging.LoggerAdapter):
 
 
 class Peer:
+    peer_id = 0
+
     def __init__(self):
+        self.id = Peer.peer_id
+        Peer.peer_id += 1
+
         # Networking
         self.socket = None
         self.ip = None
@@ -89,7 +97,8 @@ class Peer:
         Raise EOFError in case of error or when the other end of the socket is closed"""
         loop = asyncio.get_event_loop()
         try:
-            data = await loop.sock_recv(self.socket, self.buffer_size)
+            future = loop.sock_recv(self.socket, self.buffer_size)
+            data = await asyncio.wait_for(future, timeout=KEEPALIVE_TIMEOUT)
         except PeerConnectErrors as e:
             self.logger.debug("sock_recv() failed: {}".format(e))
             raise EOFError
@@ -209,7 +218,7 @@ async def exchange(torrent,
     if initiated:
         await p.write([
             HandShake(torrent.info_hash),
-            BitField(torrent.pieces, torrent.nbr_pieces)
+            BitField(torrent.piece_manager.pieces, torrent.piece_manager.nbr_pieces)
         ])
 
     async for message in p.get_messages():
@@ -220,15 +229,15 @@ async def exchange(torrent,
             p.logger.error("invalid message: {}", str(e))
             break
         # Update the torrent with information from the message
-        torrent.update_from_message(message)
+        torrent.update_from_message(message, p.id)
 
         # Commit pieces to disk
-        if torrent.pieces_to_write:
+        if torrent.piece_manager.pieces_to_write:
             await torrent.write_piece(loop)
 
         # Build a suitable answer
         messages = []
-        for m in torrent.build_answer_to(message, initiated):
+        for m in torrent.build_answer_to(message, initiated, p.id):
             if isinstance(m, Piece):
                 # Read disk to add missing info
                 messages.append(await torrent.complement(m))

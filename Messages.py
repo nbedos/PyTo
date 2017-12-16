@@ -24,12 +24,8 @@ class Message(object):
     def __eq__(self, other):
         if isinstance(other, self.__class__):
             return self.__dict__ == other.__dict__
-        return NotImplemented
-
-    def __ne__(self, other):
-        if isinstance(other, self.__class__):
-            return not self.__eq__(other)
-        return NotImplemented
+        else:
+            return False
 
     def __repr__(self):
         return "{0}: {1}".format(self.__class__, sorted(self.__dict__.items()))

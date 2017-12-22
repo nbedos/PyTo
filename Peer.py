@@ -8,7 +8,7 @@ import logging
 import socket
 
 from Messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, \
-                     BitField, Request, Piece, Cancel, Port, HandShake
+                     BitField, Request, Piece, Cancel, Port, HandShake, decode_length, LENGTH_PREFIX
 
 from typing import List, Union, AsyncIterable
 
@@ -25,8 +25,10 @@ PeerWriteErrors = (ConnectionResetError,)
 
 module_logger = logging.getLogger(__name__)
 
+SOCKET_BUFFER_LENGTH = 4096
 REQUEST_TIMEOUT = 10
 KEEPALIVE_TIMEOUT = 120
+
 
 class PeerAdapter(logging.LoggerAdapter):
     """Add the port and ip of the Peer to logger messages"""
@@ -46,7 +48,6 @@ class Peer:
         self.ip = None
         self.port = None
         self.buffer = b""
-        self.buffer_size = 4096
 
         # Peer status
         self.handshake_done = False
@@ -54,11 +55,11 @@ class Peer:
         self.chokes_me = True
         self.is_interested = False
         self.interests_me = False
-        self.pieces = set([])
+        self.pieces = set()
 
         # Requests sent
         self.pending = set()
-        self.pending_target = 10
+        self.pending_target = 30
 
         self.logger = PeerAdapter(module_logger, {'ip': 'unknown', 'port': 'unknown'})
 
@@ -91,48 +92,68 @@ class Peer:
         self.logger = PeerAdapter(module_logger, {'ip': self.ip, 'port': self.port})
         self.logger.info("Established connection")
 
-    async def read(self) -> bytes:
-        """Read a chunk of data sent by the peer
+    async def read_exactly(self, nbr_bytes: int) -> bytes:
+        """Read nbr_bytes from the peer
 
-        Raise EOFError in case of error or when the other end of the socket is closed"""
+        Raise EOFError in case of error or when the connection is closed"""
         loop = asyncio.get_event_loop()
-        try:
-            future = loop.sock_recv(self.socket, self.buffer_size)
-            data = await asyncio.wait_for(future, timeout=KEEPALIVE_TIMEOUT)
-        except PeerConnectErrors as e:
-            self.logger.debug("sock_recv() failed: {}".format(e))
-            raise EOFError
 
-        if not data:
-            raise EOFError
+        while len(self.buffer) < nbr_bytes:
+            old_buffer_length = len(self.buffer)
+            try:
+                future = loop.sock_recv(self.socket, SOCKET_BUFFER_LENGTH)
+                self.buffer += await asyncio.wait_for(future, timeout=KEEPALIVE_TIMEOUT)
+            except PeerConnectErrors as e:
+                self.logger.debug("sock_recv() failed: {}".format(e))
+                self.close()
+                raise EOFError
 
+            if old_buffer_length == len(self.buffer):
+                self.logger.debug("Connection terminated unexpectedly")
+                self.close()
+                raise EOFError
+
+        data, self.buffer = self.buffer[:nbr_bytes], self.buffer[nbr_bytes:]
         return data
 
     async def get_messages(self) -> AsyncIterable:
         """"Generator returning the Messages sent by the peer"""
+        try:
+            data = await self.read_exactly(HandShake.length_v1)
+        except EOFError:
+            return
+
+        try:
+            message = HandShake.from_bytes(data)
+        except ValueError:
+            self.logger.error("Received invalid message: {}".format(str(data)))
+            return
+
+        yield message
+
         while self.socket:
             try:
-                self.buffer += await self.read()
+                data = await self.read_exactly(LENGTH_PREFIX)
             except EOFError:
-                self.logger.debug("Connection terminated unexpectedly")
-                self.close()
+                break
+            message_length = decode_length(data)
+            try:
+                data = await self.read_exactly(message_length)
+            except EOFError:
+                break
+            try:
+                message = Message.from_bytes(data)
+            except ValueError:
+                self.logger.error("Received invalid message: {}".format(str(data)))
                 break
 
-            while self.buffer:
-                try:
-                    message, self.buffer = Message.from_bytes(self.buffer)
-                    if message is None:
-                        break
-                    else:
-                        self.logger.debug("Message received: {}".format(str(message)))
-                        yield message
-                except ValueError:
-                    self.logger.error("Received invalid message: {}".format(str(self.buffer)))
-                    self.close()
-                    break
+            self.logger.debug("Message received: {}".format(str(message)))
+            yield message
 
-    # Might raise any exception listed in PeerWriteErrors
     async def write(self, messages: List[Message]):
+        """Send all listed messages to the peer
+
+        Might raise any exception in PeerWriteErrors"""
         for m in messages:
             self.logger.debug("write: {}".format(str(m)))
 

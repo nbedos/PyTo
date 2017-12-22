@@ -3,7 +3,7 @@ import socket
 
 import asyncio
 from Peer import Peer
-from test_Messages import validMessages
+from test_Messages import VALID_MESSAGES, VALID_HANDSHAKE
 
 
 class TestPeer(unittest.TestCase):
@@ -57,7 +57,12 @@ class TestPeer(unittest.TestCase):
             return [m async for m in peer.get_messages()]
 
         # Reuse a list of messages from test_Messages
-        bytes_messages, messages = map(list, zip(*(validMessages.items())))
+        all_messages = []
+        for bytes_message, message in VALID_HANDSHAKE.items():
+            all_messages.append((bytes_message, message))
+        for (length, payload), message in VALID_MESSAGES.items():
+            all_messages.append((b"".join([length, payload]), message))
+        bytes_messages, messages = map(list, zip(*all_messages))
         bytestring = b"".join(bytes_messages)
 
         # Create futures

@@ -247,7 +247,7 @@ async def exchange(torrent,
         try:
             p.handle_message(message)
         except ValueError as e:
-            p.logger.error("invalid message: {}", str(e))
+            p.logger.error("invalid message: {}".format(str(e)))
             break
         # Update the torrent with information from the message
         torrent.update_from_message(message, p.id)

@@ -1,3 +1,4 @@
+[![Build Status](https://travis-ci.org/nbedos/PyTo.svg?branch=master)](https://travis-ci.org/nbedos/PyTo)
 # PyTo, a Python BitTorrent client
 ### Project Goals
 The main goal is to create a BitTorrent client software written in Python 3 using only the standard library, essentially for educational purposes.

@@ -5,18 +5,24 @@ Executing this module launches the download of the last Archlinux installation f
 way to see PyTo working.
 """
 import concurrent.futures
-import cProfile
+import os.path
+import sys
+
 from tempfile import mkdtemp, gettempdir
-from os.path import join
 
-from Torrent import *
+EXAMPLES_DIR = os.path.dirname(os.path.abspath(__file__))
+# Add the parent directory of the current file to sys.path so that we can
+# import pyto even if it is not installed
+sys.path.insert(0, os.path.join(EXAMPLES_DIR, os.path.pardir))
+from pyto.torrent import *
 
 
-arch_torrent = "./data/torrent files/archlinux-2017.12.01-x86_64.iso.torrent"
+DATA_DIR = os.path.join(EXAMPLES_DIR, 'data')
+arch_torrent = os.path.join(DATA_DIR, "archlinux-2017.12.01-x86_64.iso.torrent")
 
 
 def main():
-    logfile = join(gettempdir(), "PyTo.log")
+    logfile = os.path.join(gettempdir(), "PyTo.log")
     logging.basicConfig(
         level=logging.INFO,
         format="[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d] "
@@ -28,7 +34,7 @@ def main():
     logging.info("Logging to {}".format(logfile))
 
     loop = asyncio.get_event_loop()
-    #loop.set_debug(True)
+    loop.set_debug(False)
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     loop.set_default_executor(executor)
 
@@ -56,4 +62,4 @@ def main():
 
 
 if __name__ == '__main__':
-    cProfile.run('main()', sort='cumtime')
+    main()

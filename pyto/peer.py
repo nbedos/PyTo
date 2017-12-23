@@ -7,8 +7,8 @@ import asyncio
 import logging
 import socket
 
-from Messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, \
-                     BitField, Request, Piece, Cancel, Port, HandShake, decode_length, LENGTH_PREFIX
+from pyto.messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, \
+                          BitField, Request, Piece, Cancel, Port, HandShake, decode_length, LENGTH_PREFIX
 
 from typing import List, Union, AsyncIterable
 
@@ -131,7 +131,7 @@ class Peer:
 
         yield message
 
-        while self.socket:
+        while True:
             try:
                 data = await self.read_exactly(LENGTH_PREFIX)
             except EOFError:
@@ -163,9 +163,7 @@ class Peer:
 
     def close(self):
         self.logger.debug("Connection closed")
-        if self.socket is not None:
-            self.socket.close()
-        self.socket = None
+        self.socket.close()
 
     def handle_message(self, message: Message):
         # TODO: Maybe move this check somewhere more appropriate

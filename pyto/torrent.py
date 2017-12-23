@@ -13,11 +13,11 @@ from hashlib import sha1
 from struct import unpack, iter_unpack, error as struct_error
 from typing import Iterator, Tuple, Union, List, Set, Dict
 
-from BEncoding import bdecode, bencode
-from Messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, \
-                     BitField, Request, Piece, Cancel, Port, HandShake
-from Peer import Peer, exchange
-from PieceManager import PieceManager
+from pyto.bencoding import bdecode, bencode
+from pyto.messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, \
+                          BitField, Request, Piece, Cancel, Port, HandShake
+from pyto.peer import Peer, exchange
+from pyto.piecemanager import PieceManager
 
 
 module_logger = logging.getLogger(__name__)
@@ -328,21 +328,19 @@ class Torrent:
         for f in self.futures:
             f.cancel()
         print(self.futures)
+        self.close()
 
-    # TODO: Why does test_Torrent fails if we close all sockets ?
+    # TODO: Why does test_Torrent fails if we close all sockets ? (Windows only)
     # "OSError: [WinError 10038] Une opération a été tentée sur autre chose qu’un socket"
     def close(self):
         self.queue.put_nowait("EVENT_END")
         self.logger.info("EVENT_END")
-        # if self.socket:
-        #     print(self.socket)
-        #     #self.socket.shutdown(socket.SHUT_RDWR)
-        #     self.socket.close()
-        # for peer in self.peers.values():
-        #     print(peer.socket)
-        #     if peer.socket:
-        #         peer.socket.shutdown(socket.SHUT_RDWR)
-        #         peer.socket.close()
+
+        print("closing: ", self.socket)
+        self.socket.close()
+        for peer in self.peers.values():
+            print("closing: ", peer.socket)
+            peer.socket.close()
         self.file.close()
 
     def start_server(self, port: int):

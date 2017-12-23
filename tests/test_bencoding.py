@@ -1,6 +1,10 @@
 import unittest
-from BEncoding import bdecode, bencode
+from pyto.bencoding import bdecode, bencode
 import os
+
+TEST_FILE_DIR = os.path.dirname(os.path.abspath(__file__))
+# DATA_DIR is TEST_FILE_DIR/data 
+DATA_DIR = os.path.join(TEST_FILE_DIR, 'data')
 
 validBEncodings = {
     # INTEGERS
@@ -97,12 +101,13 @@ class TestBencode(unittest.TestCase):
 class TestTorrent(unittest.TestCase):
     def test_torrent_idempotence(self):
         # Decode whole Torrent files
-        for file in os.listdir("./data/torrent files/"):
-            filename = os.path.join("./data/torrent files/", os.fsdecode(file))
+        torrent_dir = os.path.join(DATA_DIR, "torrent files")
+        for file in os.listdir(torrent_dir):
+            filename = os.path.join(torrent_dir, os.fsdecode(file))
             with open(filename, "rb") as f:
                 with self.subTest(filename=filename):
                     s = f.read()
                     self.assertEqual(s, bencode(bdecode(s)))
 
 if __name__ == '__main__':
-        unittest.main()
+    unittest.main()

@@ -2,8 +2,8 @@ import unittest
 import socket
 
 import asyncio
-from Peer import Peer
-from test_Messages import VALID_MESSAGES, VALID_HANDSHAKE
+from pyto.peer import Peer
+from tests.test_messages import VALID_MESSAGES, VALID_HANDSHAKE
 
 
 class TestPeer(unittest.TestCase):
@@ -12,25 +12,28 @@ class TestPeer(unittest.TestCase):
         ip = "127.0.0.1"
         port = 6991
         loop = asyncio.get_event_loop()
-        event = asyncio.Event()
+        event_server_ready = asyncio.Event()
+        event_peer_disconnected = asyncio.Event()
 
         async def server():
             """Create a listening socket and accept the first connection"""
             server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             server_socket.setblocking(0)
-            server_socket.bind(('', 6991))
+            server_socket.bind((ip, port))
             server_socket.listen(5)
-            event.set()
+            event_server_ready.set()
             client_socket, _ = await loop.sock_accept(server_socket)
+            await event_peer_disconnected.wait()
             client_socket.close()
             server_socket.close()
 
         async def client():
             """Once the server is listening, connect the peer"""
             p = Peer()
-            await event.wait()
+            await event_server_ready.wait()
             await p.connect(loop, ip, port)
             p.close()
+            event_peer_disconnected.set()
 
         f_server = asyncio.ensure_future(server())
         f_peer = asyncio.ensure_future(client())
@@ -72,6 +75,7 @@ class TestPeer(unittest.TestCase):
         # results[0] = result from f_remote
         # results[1] = result from f_peer
         results = loop.run_until_complete(futures)
+        p.close()
         result = results[1]
 
         # Check that each decoded message is identical to the original message

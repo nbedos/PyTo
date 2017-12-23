@@ -10,9 +10,12 @@ from tempfile import mkdtemp
 from unittest import TestCase
 from typing import List
 
-from Torrent import Torrent, init, download
-from Peer import Peer
+from pyto.torrent import Torrent, init, download
+from pyto.peer import Peer
 
+TEST_FILE_DIR = os.path.dirname(os.path.abspath(__file__))
+# DATA_DIR is TEST_FILE_DIR/data 
+DATA_DIR = os.path.join(TEST_FILE_DIR, 'data')
 
 class TestLocalDownload(TestCase):
     """Test PyTo on the loopback interface.
@@ -36,10 +39,11 @@ class TestLocalDownload(TestCase):
         dir2 = mkdtemp()
 
         # Setup a directory and files for the seeder
-        copy("./data/files/lorem.txt", dir1)
+        copy(os.path.join(DATA_DIR, "files", "lorem.txt"), dir1)
 
-        torrent_seeder = init("./data/torrent files/lorem.txt.torrent", dir1)
-        torrent_leecher = init("./data/torrent files/lorem.txt.torrent", dir2)
+        torrent_file = os.path.join(DATA_DIR, "torrent files", "lorem.txt.torrent")
+        torrent_seeder = init(torrent_file, dir1)
+        torrent_leecher = init(torrent_file, dir2)
 
         async def seeder():
             with unittest.mock.patch.object(Torrent, 'get_peers') as get_peers_mocked:
@@ -110,5 +114,4 @@ class TestLocalDownload(TestCase):
 
 
 if __name__ == '__main__':
-        import cProfile
-        cProfile.run('unittest.main()', sort='tottime')
+        unittest.main()

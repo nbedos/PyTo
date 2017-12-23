@@ -2,7 +2,7 @@ import secrets
 import unittest
 from unittest import TestCase
 
-from PieceManager import PieceManager
+from pyto.piecemanager import PieceManager
 
 
 class TestPieceManager(TestCase):

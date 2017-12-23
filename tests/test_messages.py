@@ -1,5 +1,5 @@
 import unittest
-from Messages import *
+from pyto.messages import *
 
 
 VALID_MESSAGES = {

@@ -17,6 +17,7 @@ TEST_FILE_DIR = os.path.dirname(os.path.abspath(__file__))
 # DATA_DIR is TEST_FILE_DIR/data 
 DATA_DIR = os.path.join(TEST_FILE_DIR, 'data')
 
+
 class TestLocalDownload(TestCase):
     """Test PyTo on the loopback interface.
 
@@ -31,7 +32,7 @@ class TestLocalDownload(TestCase):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        #loop.set_debug(True)
+        loop.set_debug(False)
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         loop.set_default_executor(executor)
 
@@ -49,14 +50,14 @@ class TestLocalDownload(TestCase):
             with unittest.mock.patch.object(Torrent, 'get_peers') as get_peers_mocked:
                 # Mock Torrent.get_peers to return an empty list
                 get_peers_mocked.return_value = []
-                await download(loop, torrent_seeder, 6881)
+                await download(torrent_seeder, 6881)
 
         async def leecher():
             with unittest.mock.patch.object(Torrent, 'get_peers') as get_peers_mocked:
                 # Mock Torrent.get_peers to return the address of the seeder
                 get_peers_mocked.return_value = [("127.0.0.1", 6881)]
                 # Setup a directory and files for the leecher
-                await download(loop, torrent_leecher, 6882)
+                await download(torrent_leecher, 6882)
 
         async def wait_for(torrent: Torrent, events: List[str]):
             event = None

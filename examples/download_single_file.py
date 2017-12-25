@@ -38,11 +38,11 @@ def main():
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     loop.set_default_executor(executor)
 
-    async def hypervisor(loop):
+    async def hypervisor():
         dir = mkdtemp()
 
         t = init(arch_torrent, dir)
-        f = asyncio.ensure_future(download(loop, t, 6881))
+        f = asyncio.ensure_future(download(t, 6881))
 
         item = ""
         while item != "EVENT_DOWNLOAD_COMPLETE" and item != "EVENT_END":
@@ -52,10 +52,9 @@ def main():
             raise ValueError
 
         t.stop()
-
         await f
 
-    loop.run_until_complete(hypervisor(loop))
+    loop.run_until_complete(hypervisor())
 
     loop.stop()
     loop.close()

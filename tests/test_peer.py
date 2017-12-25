@@ -29,9 +29,9 @@ class TestPeer(unittest.TestCase):
 
         async def client():
             """Once the server is listening, connect the peer"""
-            p = Peer()
+            p = Peer(ip, port, reader=None, writer=None)
             await event_server_ready.wait()
-            await p.connect(loop, ip, port)
+            await p.connect()
             p.close()
             event_peer_disconnected.set()
 
@@ -41,25 +41,9 @@ class TestPeer(unittest.TestCase):
         futures = asyncio.gather(f_server, f_peer)
         loop.run_until_complete(futures)
 
-    def _test_get_messages(self, buffer_size):
-        """Test that a list of messages are correctly decoded"""
-        loop = asyncio.get_event_loop()
-
-        # Setup for the Peer instance
-        p = Peer()
-        p.socket, remote_socket = socket.socketpair()
-        p.buffer_size = buffer_size
-
-        # Coroutine #1: send all messages to the peer
-        async def send(s: socket.socket, b: bytes):
-            loop.sock_sendall(s, b)
-            s.close()
-
-        # Coroutine #2: read all the messages sent on the socket
-        async def get_all_messages(peer: Peer):
-            return [m async for m in peer.get_messages()]
-
-        # Reuse a list of messages from test_Messages
+    def test_get_messages(self):
+        """Test get_messages"""
+        # Create bytestring from list of messages
         all_messages = []
         for bytes_message, message in VALID_HANDSHAKE.items():
             all_messages.append((bytes_message, message))
@@ -68,33 +52,24 @@ class TestPeer(unittest.TestCase):
         bytes_messages, messages = map(list, zip(*all_messages))
         bytestring = b"".join(bytes_messages)
 
-        # Create futures
-        f_remote = asyncio.ensure_future(send(remote_socket, bytestring))
-        f_peer = asyncio.ensure_future(get_all_messages(p))
-        futures = asyncio.gather(f_remote, f_peer)
-        # results[0] = result from f_remote
-        # results[1] = result from f_peer
-        results = loop.run_until_complete(futures)
-        p.close()
-        result = results[1]
+        async def seeder_callback(_, w):
+            w.write(bytestring)
+            await w.drain()
+            w.close()
 
-        # Check that each decoded message is identical to the original message
-        for i, message in enumerate(messages):
-            name = "buffer_size={}".format(buffer_size)
-            with self.subTest(name=name,
-                              case=bytes_messages[i],
-                              expected=message,
-                              result=result[i]):
-                self.assertEqual(result[i], message)
+        async def read_data():
+            # Create server
+            await asyncio.start_server(seeder_callback, "127.0.0.1", 6992)
+            # Create Peer instance
+            p = Peer("127.0.0.1", 6992, None, None)
+            await p.connect()
+            read_messages = [m async for m in p.get_messages()]
+            p.close()
+            return read_messages
 
-    def test_get_messages(self):
-        """Test Peer.get_messages for varying buffer sizes"""
-        # Usual buffer size
-        self._test_get_messages(buffer_size=4096)
-        # Intermediary buffer size
-        self._test_get_messages(buffer_size=5)
-        # Minimal buffer size which should still work
-        self._test_get_messages(buffer_size=1)
+        loop = asyncio.get_event_loop()
+        results = loop.run_until_complete(read_data())
+        self.assertEqual(results, messages)
 
 
 if __name__ == '__main__':

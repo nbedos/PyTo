@@ -4,7 +4,6 @@ Torrent module
 An instance of the Torrent class represents a Torrent file
 """
 import asyncio
-import itertools
 import logging
 import os
 import urllib.parse
@@ -31,16 +30,16 @@ class TorrentAdapter(logging.LoggerAdapter):
 
 class Torrent:
     """Represent a Torrent file"""
-    def __init__(self, announce: str, name: str, info_hash: bytes, hashes: List[bytes],
-                 piece_length: int, length: int):
+    def __init__(self, announce: str, name: str, contents, info_hash: bytes, hashes: List[bytes],
+                 piece_length: int):
         self.announce = announce
         self.name = _sanitize(name)
+        self.contents = contents
+        self.structure = {}
         self.info_hash = info_hash
         self.hashes = hashes
-        self.length = length
+        self.length = length = sum(file_length for _, _, file_length in contents)
         self.piece_manager = PieceManager(length, piece_length)
-        self.file: Union[BinaryIO, None] = None
-        self.file_lock = asyncio.Lock()
         self._is_complete = False
 
         self.server = None
@@ -57,17 +56,26 @@ class Torrent:
     def from_file(cls, torrent_file: str):
         with open(torrent_file, "rb") as f:
             m = bdecode(f.read())
+
         try:
             info = m[b'info']
-            return cls(m[b'announce'].decode("utf-8"),
-                       info[b'name'].decode("utf-8"),
-                       sha1(bencode(info)).digest(),
-                       _split(info[b"pieces"], 20),
-                       info[b"piece length"],
-                       info[b"length"])
+            announce = m[b'announce'].decode("utf-8")
+            name = info[b'name'].decode("utf-8")
+            info_hash = sha1(bencode(info)).digest()
+            hashes = _split(info[b"pieces"], sha1().digest_size)
+            piece_length = info[b"piece length"]
+
+            contents = []
+            if b'files' in info:
+                # Multiple file mode
+                pass
+            else:
+                # Single file mode
+                contents.append(("", name, info[b"length"]))
         except KeyError:
-            pass
-        raise ValueError("Invalid torrent file")
+            raise ValueError("Invalid torrent file")
+
+        return cls(announce, name, contents, info_hash, hashes, piece_length)
 
     def __repr__(self) -> str:
         return "\n\t".join([
@@ -80,60 +88,90 @@ class Torrent:
              "       pieces: {}".format(self.piece_manager.pieces),
         ])
 
-    def _seek_and_read(self, offset, piece_length):
-        self.file.seek(offset)
-        return self.file.read(piece_length)
+    @staticmethod
+    def _seek_and_read(file: BinaryIO, part_offset: int, part_length: int):
+        file.seek(part_offset)
+        return file.read(part_length)
 
-    async def read_piece(self, piece_index: int) -> bytes:
-        loop = asyncio.get_event_loop()
+    async def read_piece(self, piece_index: int):
         self.logger.debug("reading piece #{}".format(piece_index))
+        loop = asyncio.get_event_loop()
         offset = piece_index * self.piece_manager.default_piece_length
         current_piece_length = self.piece_manager.piece_length(piece_index)
-        with await self.file_lock:
-            return await loop.run_in_executor(None,
-                                              self._seek_and_read,
-                                              offset,
-                                              current_piece_length)
+        piece_bounds = offset, offset + current_piece_length - 1
+        piece = b""
+        for file_bounds, (file, lock) in self.structure.items():
+            file_offset, _ = file_bounds
+            interval = _intersection(file_bounds, piece_bounds)
+            if interval is not None:
+                part_offset = interval[0] - file_offset
+                part_length = interval[1] - interval[0] + 1
+                with await lock:
+                    piece += await loop.run_in_executor(None,
+                                                        self._seek_and_read,
+                                                        file,
+                                                        part_offset,
+                                                        part_length)
+        return piece
 
-    def _seek_and_write(self, piece_index: int, piece: bytes):
-        self.file.seek(piece_index * self.piece_manager.default_piece_length)
-        self.file.write(piece)
+    @staticmethod
+    def _seek_and_write(file: BinaryIO, part_offset: int, part: bytes):
+        file.seek(part_offset)
+        file.write(part)
 
     async def write_piece(self, loop):
         my_pieces_to_write = self.piece_manager.pieces_to_write.copy()
         self.piece_manager.pieces_to_write = dict([])
+        # TODO: We might lose pieces if we crash here
         for piece_index, piece in my_pieces_to_write.items():
             self.logger.debug("writing piece #{}".format(piece_index))
-            with await self.file_lock:
-                await loop.run_in_executor(None, self._seek_and_write, piece_index, piece)
+            offset = piece_index * self.piece_manager.default_piece_length
+            for file_bounds, (file, lock) in self.structure.items():
+                file_offset, _ = file_bounds
+                # Transform absolute offsets to offsets relative to the start of the file
+                piece_bounds = offset - file_offset, offset - file_offset + len(piece) - 1
+                part_bounds = _intersection(file_bounds, piece_bounds)
+                if part_bounds is not None:
+                    piece_offset, _ = piece_bounds
+                    part_offset, _ = part_bounds
+                    part_length = part_bounds[1] - part_bounds[0] + 1
+                    part = piece[part_offset - piece_offset: part_offset - piece_offset + part_length]
+                    with await lock:
+                        await loop.run_in_executor(None,
+                                                   self._seek_and_write,
+                                                   file,
+                                                   part_offset,
+                                                   part)
 
-    def init_files(self, download_dir: str):
+    async def init_files(self, download_dir: str):
         """Create missing files, check existing ones"""
         os.makedirs(download_dir, exist_ok=True)
-        torrent_file = os.path.join(download_dir, str(self.name))
-        reopen_read_write = False
-        try:
-            f = open(torrent_file, "rb")
-            if os.stat(torrent_file).st_size != self.length:
-                print(os.stat(torrent_file).st_size, self.length)
 
-                raise ValueError("The file size does not match with the torrent size")
-            pieces = iter(lambda: f.read(self.piece_manager.default_piece_length), b"")
-            for piece_index, piece in enumerate(pieces):
-                if self.hashes[piece_index] == sha1(piece).digest():
-                    self.piece_manager.register_piece_owned(piece_index)
-                else:
-                    reopen_read_write = True
-        except FileNotFoundError:
-            f = open(torrent_file, "wb")
-            f.truncate(self.length)
-            reopen_read_write = True
+        offset = 0
+        for dirname, filename, file_length in self.contents:
+            filename = _sanitize(filename)
+            dirname = _sanitize(dirname)
+            file_directory = os.path.join(download_dir, dirname)
+            os.makedirs(file_directory, exist_ok=True)
+            file_path = os.path.join(file_directory, filename)
+            try:
+                f = open(file_path, "rb")
+                if os.stat(file_path).st_size != file_length:
+                    f.truncate(file_length)
+            except FileNotFoundError:
+                f = open(file_path, "wb")
+                f.truncate(file_length)
 
-        if reopen_read_write:
             f.close()
-            f = open(torrent_file, "rb+")
+            f = open(file_path, "rb+")
 
-        self.file = f
+            self.structure[(offset, offset + file_length - 1)] = (f, asyncio.Lock())
+            offset += file_length
+
+        hashes = [h async for h in self.hash_files()]
+        for piece_index, hash in enumerate(hashes):
+            if hash == self.hashes[piece_index]:
+                self.piece_manager.register_piece_owned(piece_index)
 
     def get_peers(self) -> Iterator[Tuple[str, int]]:
         """Send an announce query to the tracker"""
@@ -165,10 +203,10 @@ class Torrent:
         self.piece_manager.remove_peer(p.id, p.pieces)
         del self.peers[(p.ip, p.port)]
 
-    def _hash_file(self) -> List[bytes]:
-        self.file.seek(0)
-        pieces = iter(lambda: self.file.read(self.piece_manager.default_piece_length), b"")
-        return list(map(lambda p: sha1(p).digest(), pieces))
+    async def hash_files(self):
+        for piece_index in range(self.piece_manager.nbr_pieces):
+            piece = await self.read_piece(piece_index)
+            yield sha1(piece).digest()
 
     async def is_complete(self):
         if self._is_complete:
@@ -177,14 +215,13 @@ class Torrent:
         all_pieces = set(range(self.piece_manager.nbr_pieces))
         self.logger.debug("missing pieces: {}".format(all_pieces - self.piece_manager.pieces))
         if self.piece_manager.pieces == all_pieces:
-            loop = asyncio.get_event_loop()
-            self.logger.info("Checking file hashes...")
-            with await self.file_lock:
-                hashes = await loop.run_in_executor(None, self._hash_file)
-
+            self.logger.info("Checking pieces hashes...")
+            hashes = [h async for h in self.hash_files()]
+            print("hashes", hashes)
+            print("self.hashes", self.hashes)
             self._is_complete = (hashes == self.hashes)
             if self._is_complete:
-                # TODO: reopen self.file read only, synchronize with the reader/writer thread
+                # TODO: reopen files read only, synchronize with the reader/writer thread
                 self.logger.debug("Download complete. Nothing more to request")
                 try:
                     self.queue.put_nowait("EVENT_DOWNLOAD_COMPLETE")
@@ -306,7 +343,7 @@ class Torrent:
             reqs.append(Request(piece_index, block_offset, block_length))
         return reqs
 
-    def stop(self):
+    async def stop(self):
         print(self.futures)
         self.queue.put_nowait("EVENT_END")
         self.logger.info("EVENT_END")
@@ -314,12 +351,15 @@ class Torrent:
         # End connections with peers
         for peer in self.peers.values():
             peer.close()
-        self.file.close()
+
+        for file, lock in self.structure.values():
+            with await lock:
+                file.close()
 
 
-def init(torrent_file: str, download_dir: str):
+async def init(torrent_file: str, download_dir: str):
     torrent = Torrent.from_file(torrent_file)
-    torrent.init_files(download_dir)
+    await torrent.init_files(download_dir)
     logging.debug(torrent)
     return torrent
 
@@ -365,7 +405,7 @@ async def download(torrent: Torrent, listen_port: int):
             # We catch ALL exceptions here, otherwise one of our futures may fail silently
             except Exception:
                 torrent.logger.exception("Future failed")
-                torrent.stop()
+                await torrent.stop()
                 raise
             else:
                 if item in pending_connections:
@@ -375,7 +415,7 @@ async def download(torrent: Torrent, listen_port: int):
                     pending_connections.remove(item)
 
     print(torrent.futures)
-    torrent.stop()
+    await torrent.stop()
 
 
 def _split(l: List, n: int) -> List:
@@ -403,6 +443,22 @@ def _decode_ipv4(buffer: bytes) -> Tuple[str, int]:
     except struct_error:
         pass
     raise ValueError("Invalid (ip, port)")
+
+
+def _intersection(interval1: Tuple[int, int], interval2: Tuple[int, int]):
+    """Return the intersection of two closed intervals as an interval
+
+    If the two intervals do not overlap, return None"""
+    (a, b), (c, d) = interval1, interval2
+    assert (a <= b) and (c <= d)
+
+    lower_bound = max(a, c)
+    upper_bound = min(b, d)
+
+    if lower_bound <= upper_bound:
+        return lower_bound, upper_bound
+
+    return None
 
 
 if __name__ == '__main__':

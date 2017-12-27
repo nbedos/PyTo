@@ -41,7 +41,7 @@ def main():
     async def hypervisor():
         dir = mkdtemp()
 
-        t = init(arch_torrent, dir)
+        t = await init(arch_torrent, dir)
         f = asyncio.ensure_future(download(t, 6881))
 
         item = ""
@@ -51,7 +51,7 @@ def main():
         if item == "EVENT_END":
             raise ValueError
 
-        t.stop()
+        await t.stop()
         await f
 
     loop.run_until_complete(hypervisor())

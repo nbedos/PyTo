@@ -1,1 +1,3 @@
+examples/data/* binary
 tests/data/files/* binary
+tests/data/torrent files/* binary

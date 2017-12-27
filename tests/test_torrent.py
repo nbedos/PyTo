@@ -43,8 +43,8 @@ class TestLocalDownload(TestCase):
         copy(os.path.join(DATA_DIR, "files", "lorem.txt"), dir1)
 
         torrent_file = os.path.join(DATA_DIR, "torrent files", "lorem.txt.torrent")
-        torrent_seeder = init(torrent_file, dir1)
-        torrent_leecher = init(torrent_file, dir2)
+        torrent_seeder = loop.run_until_complete(init(torrent_file, dir1))
+        torrent_leecher = loop.run_until_complete(init(torrent_file, dir2))
 
         async def seeder():
             with unittest.mock.patch.object(Torrent, 'get_peers') as get_peers_mocked:
@@ -70,7 +70,6 @@ class TestLocalDownload(TestCase):
         f_wait_accept_conns = asyncio.ensure_future(
             wait_for(torrent_seeder, ["EVENT_ACCEPT_CONNECTIONS", "EVENT_END"])
         )
-        f_leecher = None
         f_download_complete = None
 
         futures = {f_seeder, f_wait_accept_conns}
@@ -97,8 +96,8 @@ class TestLocalDownload(TestCase):
                 # Once the leecher has downloaded the file, stop all torrents
                 if item == f_download_complete:
                     if result == "EVENT_DOWNLOAD_COMPLETE":
-                        torrent_leecher.stop()
-                        torrent_seeder.stop()
+                        loop.run_until_complete(torrent_leecher.stop())
+                        loop.run_until_complete(torrent_seeder.stop())
                     elif result == "EVENT_END":
                         print("seeder failed")
 

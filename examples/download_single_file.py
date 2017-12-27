@@ -35,7 +35,7 @@ def main():
 
     loop = asyncio.get_event_loop()
     loop.set_debug(False)
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    executor = concurrent.futures.ThreadPoolExecutor()
     loop.set_default_executor(executor)
 
     async def hypervisor():

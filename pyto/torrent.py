@@ -40,6 +40,7 @@ class Torrent:
         self.length = length
         self.piece_manager = PieceManager(length, piece_length)
         self.file: Union[BinaryIO, None] = None
+        self.file_lock = asyncio.Lock()
         self._is_complete = False
 
         self.server = None
@@ -88,10 +89,11 @@ class Torrent:
         self.logger.debug("reading piece #{}".format(piece_index))
         offset = piece_index * self.piece_manager.default_piece_length
         current_piece_length = self.piece_manager.piece_length(piece_index)
-        return await loop.run_in_executor(None,
-                                          self._seek_and_read,
-                                          offset,
-                                          current_piece_length)
+        with await self.file_lock:
+            return await loop.run_in_executor(None,
+                                              self._seek_and_read,
+                                              offset,
+                                              current_piece_length)
 
     def _seek_and_write(self, piece_index: int, piece: bytes):
         self.file.seek(piece_index * self.piece_manager.default_piece_length)
@@ -102,7 +104,8 @@ class Torrent:
         self.piece_manager.pieces_to_write = dict([])
         for piece_index, piece in my_pieces_to_write.items():
             self.logger.debug("writing piece #{}".format(piece_index))
-            await loop.run_in_executor(None, self._seek_and_write, piece_index, piece)
+            with await self.file_lock:
+                await loop.run_in_executor(None, self._seek_and_write, piece_index, piece)
 
     def init_files(self, download_dir: str):
         """Create missing files, check existing ones"""
@@ -176,7 +179,8 @@ class Torrent:
         if self.piece_manager.pieces == all_pieces:
             loop = asyncio.get_event_loop()
             self.logger.info("Checking file hashes...")
-            hashes = await loop.run_in_executor(None, self._hash_file)
+            with await self.file_lock:
+                hashes = await loop.run_in_executor(None, self._hash_file)
 
             self._is_complete = (hashes == self.hashes)
             if self._is_complete:

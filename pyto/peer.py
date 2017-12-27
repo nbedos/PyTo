@@ -224,12 +224,14 @@ async def exchange(torrent, p: Peer, initiated: bool=False):
         except ValueError as e:
             p.logger.error("invalid message: {}".format(str(e)))
             break
+
         # Update the torrent with information from the message
         torrent.update_from_message(message, p.id)
 
         # Commit pieces to disk
         if torrent.piece_manager.pieces_to_write:
             await torrent.write_piece(loop)
+            await torrent.is_complete()
 
         # Build a suitable answer
         messages = []

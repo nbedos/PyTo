@@ -4,13 +4,14 @@ Torrent module
 An instance of the Torrent class represents a Torrent file
 """
 import asyncio
+import itertools
 import logging
 import os
 import urllib.parse
 import urllib.request
 from hashlib import sha1
 from struct import unpack, iter_unpack, error as struct_error
-from typing import Iterator, Tuple, Union, List, Set, Dict
+from typing import Iterator, Tuple, Union, List, Set, Dict, BinaryIO
 
 from pyto.bencoding import bdecode, bencode
 from pyto.messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, \
@@ -38,7 +39,8 @@ class Torrent:
         self.hashes = hashes
         self.length = length
         self.piece_manager = PieceManager(length, piece_length)
-        self.file = None
+        self.file: Union[BinaryIO, None] = None
+        self._is_complete = False
 
         self.server = None
         self.peers = dict([])
@@ -77,12 +79,19 @@ class Torrent:
              "       pieces: {}".format(self.piece_manager.pieces),
         ])
 
-    def read_piece(self, piece_index: int) -> bytes:
+    def _seek_and_read(self, offset, piece_length):
+        self.file.seek(offset)
+        return self.file.read(piece_length)
+
+    async def read_piece(self, piece_index: int) -> bytes:
+        loop = asyncio.get_event_loop()
         self.logger.debug("reading piece #{}".format(piece_index))
         offset = piece_index * self.piece_manager.default_piece_length
-        self.file.seek(offset)
         current_piece_length = self.piece_manager.piece_length(piece_index)
-        return self.file.read(current_piece_length)
+        return await loop.run_in_executor(None,
+                                          self._seek_and_read,
+                                          offset,
+                                          current_piece_length)
 
     def _seek_and_write(self, piece_index: int, piece: bytes):
         self.file.seek(piece_index * self.piece_manager.default_piece_length)
@@ -93,10 +102,7 @@ class Torrent:
         self.piece_manager.pieces_to_write = dict([])
         for piece_index, piece in my_pieces_to_write.items():
             self.logger.debug("writing piece #{}".format(piece_index))
-            await asyncio.wait_for(
-                loop.run_in_executor(None, self._seek_and_write, piece_index, piece),
-                timeout=None
-            )
+            await loop.run_in_executor(None, self._seek_and_write, piece_index, piece)
 
     def init_files(self, download_dir: str):
         """Create missing files, check existing ones"""
@@ -156,19 +162,44 @@ class Torrent:
         self.piece_manager.remove_peer(p.id, p.pieces)
         del self.peers[(p.ip, p.port)]
 
-    def is_complete(self):
+    def _hash_file(self) -> List[bytes]:
+        self.file.seek(0)
+        pieces = iter(lambda: self.file.read(self.piece_manager.default_piece_length), b"")
+        return list(map(lambda p: sha1(p).digest(), pieces))
+
+    async def is_complete(self):
+        if self._is_complete:
+            return True
+
         all_pieces = set(range(self.piece_manager.nbr_pieces))
         self.logger.debug("missing pieces: {}".format(all_pieces - self.piece_manager.pieces))
-        return self.piece_manager.pieces == all_pieces
+        if self.piece_manager.pieces == all_pieces:
+            loop = asyncio.get_event_loop()
+            self.logger.info("Checking file hashes...")
+            hashes = await loop.run_in_executor(None, self._hash_file)
+
+            self._is_complete = (hashes == self.hashes)
+            if self._is_complete:
+                # TODO: reopen self.file read only, synchronize with the reader/writer thread
+                self.logger.debug("Download complete. Nothing more to request")
+                try:
+                    self.queue.put_nowait("EVENT_DOWNLOAD_COMPLETE")
+                except asyncio.QueueFull:
+                    self.logger.warning("Queue full, could not write event")
+                self.logger.info("EVENT_DOWNLOAD_COMPLETE")
+            else:
+                invalid_pieces = set(enumerate(self.hashes)) ^ set(enumerate(hashes))
+                self.logger.debug("invalid pieces: {}".format(invalid_pieces))
+
+            return self._is_complete
 
     def build_answer_to(self, message: Message, peer_id: int, initiated: bool) -> List[Message]:
         handler_name = '_build_answer_to_' + message.__class__.__name__
-        try:
+        if hasattr(self, handler_name):
             handler = getattr(self, handler_name)
-        except AttributeError:
-            self.logger.error("No handler found for message: {}".format(message))
-            raise NotImplemented
-        return handler(message, initiated, peer_id)
+            return handler(message, initiated, peer_id)
+        else:
+            return []
 
     def _build_answer_to_HandShake(self, message: HandShake, peer_id: int, initiated) -> List[Message]:
         if initiated:
@@ -179,22 +210,13 @@ class Torrent:
                 BitField(self.piece_manager.pieces, self.piece_manager.nbr_pieces)
             ]
 
-    def _build_answer_to_Choke(self, message: Choke, peer_id: int, _) -> List[Message]:
-        return []
-
-    def _build_answer_to_Unchoke(self, message: Unchoke, peer_id: int, _) -> List[Message]:
-        return []
-
-    def _build_answer_to_Interested(self, message: Interested, peer_id: int, _) -> List[Message]:
+    def _build_answer_to_Interested(self, *_) -> List[Message]:
         # TODO: update peer status
         return [Unchoke()]
 
-    def _build_answer_to_NotInterested(self, message: NotInterested, peer_id: int, _) -> List[Message]:
+    def _build_answer_to_NotInterested(self, *_) -> List[Message]:
         # TODO: update peer status
         return [Choke()]
-
-    def _build_answer_to_Have(self, message: Have, peer_id: int, _) -> List[Message]:
-        return []
 
     def _build_answer_to_BitField(self, message: BitField, peer_id: int, _) -> List[Message]:
         # Check if the peer has any interesting piece
@@ -204,7 +226,7 @@ class Torrent:
         except IndexError:
             return []
 
-    def _build_answer_to_Request(self, message: Request, peer_id: int, _) -> List[Message]:
+    def _build_answer_to_Request(self, message: Request, *_) -> List[Message]:
         block = b""
         return [
             Piece(16384,
@@ -213,50 +235,26 @@ class Torrent:
                   block)
         ]
 
-    def _build_answer_to_Piece(self, message: Piece, peer_id: int, _) -> List[Message]:
+    def _build_answer_to_Piece(self, message: Piece, *_) -> List[Message]:
         if message.piece_index in self.piece_manager.pieces:
             return [Have(message.piece_index)]
         else:
             return []
 
-    def _build_answer_to_Port(self, message: Port, peer_id: int, _) -> List[Message]:
-        return []
-
-    def _build_answer_to_Cancel(self, message: Cancel, peer_id: int, _) -> List[Message]:
-        return []
-
-    def _build_answer_to_KeepAlive(self, message: KeepAlive, peer_id: int, _) -> List[Message]:
-        return []
-
     def update_from_message(self, message: Message, peer_id: int):
         handler_name = '_update_from_' + message.__class__.__name__
-        try:
+        if hasattr(self, handler_name):
             handler = getattr(self, handler_name)
-        except AttributeError:
-            self.logger.error("No handler found for message: {}".format(message))
-            raise NotImplemented
-        handler(message, peer_id)
+            return handler(message, peer_id)
 
-    def _update_from_HandShake(self, message: HandShake, peer_id: int):
+    def _update_from_HandShake(self, message: HandShake, _):
         if self.info_hash != message.info_hash:
             raise ValueError("Invalid HandShake message")
 
-    def _update_from_Choke(self, message: Choke, peer_id: int):
-        pass
-
-    def _update_from_Unchoke(self, message: Unchoke, peer_id: int):
-        pass
-
-    def _update_from_Interested(self, message: Interested, peer_id: int):
-        pass
-
-    def _update_from_NotInterested(self, message: NotInterested, peer_id: int):
-        pass
-
-    def _update_from_Have(self, message: Have, peer_id: int):
+    def _update_from_Have(self, message: Have, _):
         self.piece_manager.register_peer_has(message.piece_index)
 
-    def _update_from_BitField(self, message: BitField, peer_id: int):
+    def _update_from_BitField(self, message: BitField, _):
         for piece_index in message.pieces:
             self.piece_manager.register_peer_has(piece_index)
 
@@ -277,27 +275,8 @@ class Torrent:
 
             self.logger.debug("Hashing succeeded for piece #{}".format(message.piece_index))
 
-            if self.is_complete():
-                # TODO: reopen files in read-only mode
-                self.logger.debug("Download complete. Nothing more to request")
-                try:
-                    self.queue.put_nowait("EVENT_DOWNLOAD_COMPLETE")
-                except asyncio.QueueFull:
-                    self.logger.warning("Queue full, could not write event")
-
-    def _update_from_Port(self, message: Port, peer_id: int):
-        pass
-
-    def _update_from_Cancel(self, message: Cancel, peer_id: int):
-        pass
-
-    def _update_from_KeepAlive(self, message: KeepAlive, peer_id: int):
-        pass
-
     async def complement(self, message: Piece) -> Piece:
-        loop = asyncio.get_event_loop()
-        future = loop.run_in_executor(None, self.read_piece, message.piece_index)
-        piece = await asyncio.wait_for(future, timeout=None)
+        piece = await self.read_piece(message.piece_index)
         block = piece[message.block_offset:message.block_offset+message.block_length]
         return Piece(len(block),
                      message.piece_index,

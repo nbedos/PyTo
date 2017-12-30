@@ -6,6 +6,7 @@ way to see PyTo working.
 """
 import concurrent.futures
 import os.path
+import shutil
 import sys
 
 from tempfile import mkdtemp, gettempdir
@@ -53,6 +54,8 @@ def main():
 
         await t.stop()
         await f
+
+        shutil.rmtree(dir)
 
     loop.run_until_complete(hypervisor())
 

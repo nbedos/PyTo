@@ -12,8 +12,7 @@ def bdecode(s: bytes):
         b, remainder = bdecode_partial(s)
         if not remainder:
             return b
-        else:
-            raise ValueError("Invalid Bencoded string (part of the string was not consumed)")
+        raise ValueError("Invalid Bencoded string (part of the string was not consumed)")
 
     raise ValueError("Invalid Bencoded string (must be bytestring)")
 

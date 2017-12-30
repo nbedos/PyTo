@@ -98,16 +98,17 @@ class TestBencode(unittest.TestCase):
                     bencode(testCase)
 
 
-class TestTorrent(unittest.TestCase):
-    def test_torrent_idempotence(self):
+class TestEndToEnd(unittest.TestCase):
+    def test_bencode_bdecode(self):
         # Decode whole Torrent files
-        torrent_dir = os.path.join(DATA_DIR, "torrent files")
+        torrent_dir = os.path.join(DATA_DIR, "torrent_files")
         for file in os.listdir(torrent_dir):
             filename = os.path.join(torrent_dir, os.fsdecode(file))
             with open(filename, "rb") as f:
                 with self.subTest(filename=filename):
                     s = f.read()
                     self.assertEqual(s, bencode(bdecode(s)))
+
 
 if __name__ == '__main__':
     unittest.main()

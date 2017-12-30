@@ -1,15 +1,8 @@
 The torrent files in this directory come from the following sources:
 
-Web:
     - Archlinux: https://www.archlinux.org/download/
     - CentOS: http://miroir.univ-paris13.fr/centos/6.9/isos/x86_64/
     - Debian: https://www.debian.org/CD/torrent-cd/index.fr.html
     - OpenSUSE: http://ftp.opensuse.org/pub/opensuse/distribution/openSUSE-current/iso/
     - Tails: https://tails.boum.org/torrents/files/
     - Ubuntu: https://www.ubuntu.com/download/alternative-downloads
-    - Wikipedia dumps: https://meta.wikimedia.org/wiki/Data_dump_torrents#English_Wikipedia
-
-
-Generated with Deluge (?) from the content of the directories in PyTo/tests/data/files/
-    - single_file.torrent
-    - multiple_files.torrent

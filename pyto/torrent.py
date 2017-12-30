@@ -14,47 +14,22 @@ from typing import Iterator, Tuple, Union, List, Set, Dict, BinaryIO
 
 from pyto.bencoding import bdecode, bencode
 from pyto.messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, \
-    BitField, Request, Piece, Cancel, Port, HandShake
+                          BitField, Request, Piece, Cancel, Port, HandShake
 from pyto.peer import Peer, exchange, PeerConnectErrors
 from pyto.piecemanager import PieceManager
+
 
 module_logger = logging.getLogger(__name__)
 
 
 class TorrentAdapter(logging.LoggerAdapter):
     """Add the name of the Torrent to logger messages"""
-
     def process(self, msg, kwargs):
         return '{:>20} {}'.format(self.extra['name'], msg), kwargs
 
 
-METAINFO_SINGLE_FILE = {
-    b'announce': b'bytestring',
-    b'info': {
-        b'name': b'bytestring',
-        b'length': 0,
-        b'pieces': b'bytestring',
-        b'piece length': 0,
-    }
-}
-
-METAINFO_MULTIPLE_FILES = {
-    b'announce': b'bytestring',
-    b'info': {
-        b'files': [{
-            b'path': [b'bytestring'],
-            b'length': 0
-        }],
-        b'name': b'bytestring',
-        b'pieces': b'bytestring',
-        b'piece length': 0,
-    }
-}
-
-
 class Torrent:
     """Represent a Torrent file"""
-
     def __init__(self, announce: str, name: str, contents, info_hash: bytes, hashes: List[bytes],
                  piece_length: int):
         self.announce = announce
@@ -63,8 +38,8 @@ class Torrent:
         self.structure = {}
         self.info_hash = info_hash
         self.hashes = hashes
-        self.length = sum(file_length for _, _, file_length in contents)
-        self.piece_manager = PieceManager(self.length, piece_length)
+        self.length = length = sum(file_length for _, _, file_length in contents)
+        self.piece_manager = PieceManager(length, piece_length)
         self._is_complete = False
 
         self.server = None
@@ -82,41 +57,35 @@ class Torrent:
         with open(torrent_file, "rb") as f:
             m = bdecode(f.read())
 
-        if _validate_structure(m, METAINFO_SINGLE_FILE):
-            single_file_mode = True
-        elif _validate_structure(m, METAINFO_MULTIPLE_FILES):
-            single_file_mode = False
-        else:
+        try:
+            info = m[b'info']
+            announce = m[b'announce'].decode("utf-8")
+            name = info[b'name'].decode("utf-8")
+            info_hash = sha1(bencode(info)).digest()
+            hashes = _split(info[b"pieces"], sha1().digest_size)
+            piece_length = info[b"piece length"]
+
+            contents = []
+            if b'files' in info:
+                # Multiple file mode
+                pass
+            else:
+                # Single file mode
+                contents.append(("", name, info[b"length"]))
+        except KeyError:
             raise ValueError("Invalid torrent file")
-
-        info = m[b'info']
-        info_hash = sha1(bencode(info)).digest()
-        announce = m[b'announce'].decode("utf-8")
-        name = info[b'name'].decode("utf-8")
-        hashes = _split(info[b'pieces'], sha1().digest_size)
-        piece_length = info[b'piece length']
-
-        contents = []
-        if single_file_mode:
-            contents.append(("", _sanitize(name), info[b"length"]))
-        else:
-            for file_dict in info[b'files']:
-                path_str = [_sanitize(b.decode("utf-8")) for b in file_dict[b'path']]
-                directory = os.path.join("", *path_str[:-1])
-                filename = path_str[-1]
-                contents.append((directory, filename, file_dict[b'length']))
 
         return cls(announce, name, contents, info_hash, hashes, piece_length)
 
     def __repr__(self) -> str:
         return "\n\t".join([
-            "Torrent: {}".format(self.name),
-            "    info_hash: {}".format(self.info_hash),
-            "     announce: {}".format(self.announce),
-            "       length: {}".format(self.length),
-            " piece_length: {}".format(self.piece_manager.default_piece_length),
-            "   nbr_pieces: {}".format(self.piece_manager.nbr_pieces),
-            "       pieces: {}".format(self.piece_manager.pieces),
+             "Torrent: {}".format(self.name),
+             "    info_hash: {}".format(self.info_hash),
+             "     announce: {}".format(self.announce),
+             "       length: {}".format(self.length),
+             " piece_length: {}".format(self.piece_manager.default_piece_length),
+             "   nbr_pieces: {}".format(self.piece_manager.nbr_pieces),
+             "       pieces: {}".format(self.piece_manager.pieces),
         ])
 
     @staticmethod
@@ -127,21 +96,21 @@ class Torrent:
     async def read_piece(self, piece_index: int):
         self.logger.debug("reading piece #{}".format(piece_index))
         loop = asyncio.get_event_loop()
-        piece_offset = piece_index * self.piece_manager.default_piece_length
+        offset = piece_index * self.piece_manager.default_piece_length
         current_piece_length = self.piece_manager.piece_length(piece_index)
-        piece_bounds = piece_offset, piece_offset + current_piece_length - 1
+        piece_bounds = offset, offset + current_piece_length - 1
         piece = b""
         for file_bounds, (file, lock) in self.structure.items():
             file_offset, _ = file_bounds
             interval = _intersection(file_bounds, piece_bounds)
             if interval is not None:
-                part_offset_in_file = interval[0] - file_offset
+                part_offset = interval[0] - file_offset
                 part_length = interval[1] - interval[0] + 1
                 with await lock:
                     piece += await loop.run_in_executor(None,
                                                         self._seek_and_read,
                                                         file,
-                                                        part_offset_in_file,
+                                                        part_offset,
                                                         part_length)
         return piece
 
@@ -156,22 +125,22 @@ class Torrent:
         # TODO: We might lose pieces if we crash here
         for piece_index, piece in my_pieces_to_write.items():
             self.logger.debug("writing piece #{}".format(piece_index))
-            piece_offset = piece_index * self.piece_manager.default_piece_length
-            current_piece_length = self.piece_manager.piece_length(piece_index)
-            piece_bounds = piece_offset, piece_offset + current_piece_length - 1
+            offset = piece_index * self.piece_manager.default_piece_length
             for file_bounds, (file, lock) in self.structure.items():
                 file_offset, _ = file_bounds
-                interval = _intersection(file_bounds, piece_bounds)
-                if interval is not None:
-                    part_offset_in_file = interval[0] - file_offset
-                    part_length = interval[1] - interval[0] + 1
-                    part_offset_in_piece = part_offset_in_file - (piece_offset - file_offset)
-                    part = piece[part_offset_in_piece: part_offset_in_piece + part_length]
+                # Transform absolute offsets to offsets relative to the start of the file
+                piece_bounds = offset - file_offset, offset - file_offset + len(piece) - 1
+                part_bounds = _intersection(file_bounds, piece_bounds)
+                if part_bounds is not None:
+                    piece_offset, _ = piece_bounds
+                    part_offset, _ = part_bounds
+                    part_length = part_bounds[1] - part_bounds[0] + 1
+                    part = piece[part_offset - piece_offset: part_offset - piece_offset + part_length]
                     with await lock:
                         await loop.run_in_executor(None,
                                                    self._seek_and_write,
                                                    file,
-                                                   part_offset_in_file,
+                                                   part_offset,
                                                    part)
 
     async def init_files(self, download_dir: str):
@@ -180,6 +149,8 @@ class Torrent:
 
         offset = 0
         for dirname, filename, file_length in self.contents:
+            filename = _sanitize(filename)
+            dirname = _sanitize(dirname)
             file_directory = os.path.join(download_dir, dirname)
             os.makedirs(file_directory, exist_ok=True)
             file_path = os.path.join(file_directory, filename)
@@ -246,6 +217,8 @@ class Torrent:
         if self.piece_manager.pieces == all_pieces:
             self.logger.info("Checking pieces hashes...")
             hashes = [h async for h in self.hash_files()]
+            print("hashes", hashes)
+            print("self.hashes", self.hashes)
             self._is_complete = (hashes == self.hashes)
             if self._is_complete:
                 # TODO: reopen files read only, synchronize with the reader/writer thread
@@ -269,8 +242,7 @@ class Torrent:
         else:
             return []
 
-    def _build_answer_to_HandShake(self, message: HandShake, peer_id: int, initiated) -> List[
-        Message]:
+    def _build_answer_to_HandShake(self, message: HandShake, peer_id: int, initiated) -> List[Message]:
         if initiated:
             return []
         else:
@@ -346,7 +318,7 @@ class Torrent:
 
     async def complement(self, message: Piece) -> Piece:
         piece = await self.read_piece(message.piece_index)
-        block = piece[message.block_offset:message.block_offset + message.block_length]
+        block = piece[message.block_offset:message.block_offset+message.block_length]
         return Piece(len(block),
                      message.piece_index,
                      message.block_offset,
@@ -452,8 +424,8 @@ def _split(l: List, n: int) -> List:
         raise ValueError("n must be >= 0")
     i = 0
     chunks = []
-    while l[i:i + n]:
-        chunks.append(l[i:i + n])
+    while l[i:i+n]:
+        chunks.append(l[i:i+n])
         i = i + n
     return chunks
 
@@ -487,90 +459,6 @@ def _intersection(interval1: Tuple[int, int], interval2: Tuple[int, int]):
         return lower_bound, upper_bound
 
     return None
-
-
-def _path_components(mypath: str) -> List[str]:
-    """Return the list of components in mypath:
-        _path_components("A/B/C/D") = ['A', 'B', 'C', 'D']
-    """
-    components = []
-    head = mypath
-    while True:
-        head, tail = os.path.split(head)
-        if tail:
-            components.insert(0, tail)
-        else:
-            if head:
-                components.insert(0, head)
-            break
-
-    return components
-
-
-def metainfo(directory: str, piece_length: int, announce: str) -> Dict:
-    """Return a metainfo dictionary describing the content of the directory"""
-    buffer = b''
-    hashes = []
-    filestats = []
-    directory = os.path.realpath(directory)
-    for dirpath, _, files in os.walk(directory, topdown=False):
-        for file in files:
-            full_path = os.path.join(dirpath, file)
-            relative_path = os.path.relpath(full_path, directory)
-            filestats.append({
-                b'path': [c.encode('utf-8') for c in _path_components(relative_path)],
-                b'length': os.path.getsize(full_path)
-            })
-            with open(full_path, "rb") as f:
-                while True:
-                    data = f.read(piece_length - len(buffer))
-                    if not data:
-                        break
-                    buffer += data
-                    if len(buffer) == piece_length:
-                        hashes.append(sha1(buffer).digest())
-                        buffer = b''
-    if buffer:
-        hashes.append(sha1(buffer).digest())
-
-    m = {
-        b'announce': announce.encode('utf-8'),
-        b'info': {
-            b'pieces': b"".join(hashes),
-            b'piece length': piece_length,
-        }
-    }
-
-    # Single file mode if there is only 1 file in the current directory (no directory structure)
-    if len(filestats) == 1 and len(filestats[0][b'path']) == 1:
-        m[b'info'][b'name'] = filestats[0][b'path'][0]
-        m[b'info'][b'length'] = filestats[0][b'length']
-    # Multiple files mode otherwise
-    else:
-        _, tail = os.path.split(directory)
-        m[b'info'][b'name'] = os.path.basename(tail).encode('utf-8')
-        m[b'info'][b'files'] = filestats
-    return m
-
-
-def _validate_structure(data, schema) -> bool:
-    """Check if the structure of 'data' conforms to 'schema'
-
-    'schema' is a (minimal) data structure such as for example:
-        s = {'announce': 'text', 'length': 1}
-
-    Dictionaries in 'data' may have keys not found in schema
-
-    Restriction: Elements of lists are checked against the first element of the corresponding
-    list in schema: this makes it impossible to validate lists containing different types"""
-    if isinstance(data, dict) and isinstance(schema, dict):
-        tests = [key in data and _validate_structure(data[key], schema[key]) for key in schema]
-        return all(tests)
-    elif isinstance(data, list):
-        tests = [_validate_structure(value, schema[0]) for value in data]
-        return all(tests)
-    else:
-        return isinstance(data, type(schema))
 
 
 if __name__ == '__main__':

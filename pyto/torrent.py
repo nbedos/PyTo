@@ -150,7 +150,7 @@ class Torrent:
         file.seek(part_offset)
         file.write(part)
 
-    async def write_piece(self, loop):
+    async def write_pieces(self, loop):
         my_pieces_to_write = self.piece_manager.pieces_to_write.copy()
         self.piece_manager.pieces_to_write = dict([])
         # TODO: We might lose pieces if we crash here

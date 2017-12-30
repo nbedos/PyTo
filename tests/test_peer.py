@@ -1,7 +1,7 @@
-import unittest
-import socket
-
 import asyncio
+import socket
+import unittest
+
 from pyto.peer import Peer
 from tests.test_messages import VALID_MESSAGES, VALID_HANDSHAKE
 
@@ -11,7 +11,8 @@ class TestPeer(unittest.TestCase):
         """Test Peer.connect()"""
         ip = "127.0.0.1"
         port = 6991
-        loop = asyncio.get_event_loop()
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         event_server_ready = asyncio.Event()
         event_peer_disconnected = asyncio.Event()
 

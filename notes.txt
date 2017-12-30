@@ -34,3 +34,12 @@ Beware of the difference between set() and {}:
 From the official doc: the content of a set defined by the construct {...} is "either a sequence of
 expressions or a comprehension". On the other hand, set() may be called with an iterator to
 initialize the set.
+
+
+WINDOWS VS UNIX END OF LINES
+
+Beware of the way end of lines are converted by git. End of line conversion changes the content and
+the length of files. If a file used to test downloads has its end of lines converted, tests may fail
+ since the length of the file would not match the length in the metainfo file anymore. In order to
+ preserve the content of a file, end of line conversion should be disabled for the files by setting
+ the binary attribute in .gitattributes.

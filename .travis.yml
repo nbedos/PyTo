@@ -4,3 +4,6 @@ python:
     - "3.6"
 script:
     - python -m unittest;
+
+notifications:
+  email: false

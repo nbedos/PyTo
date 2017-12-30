@@ -20,22 +20,20 @@ My main goal is to learn more about Python 3, be it:
 
 ### Progress
 
-Milestones:
+Functionalities:
 
- * **[Done]** Parse a Torrent file (single file mode)
- * **[Done]** Query the tracker to get a list of peers
- * **[Done]** Connect to peers and parse their messages
- * **[Done]** Check on disk if the file has already been partially downloaded when creating a Torrent instance
- * **[Done]** Accept spontaneous connections from peers
- * **[Done]** Have the client download from other instances of itself for testing
- * **[Done]** Download a whole file from the Internet (500 MB ISO downloaded at 30 MB/s)
- * **[Done]** Handle Torrents with multiple files
- * **[to be done]** Implement a choking algorithm
- * **[to be done]** Start downloads from a magnet link
- * **[to be done]** Setup an API to control the exchange of data (pause, restart, throttle...)
- * **[to be done]** Allow users to easily manage multiple simultaneous downloads
+ * **[Done]** Parsing a Torrent file (single file mode)
+ * **[Done]** Querying the tracker to get a list of peers
+ * **[Done]** Connecting to peers and parsing their messages
+ * **[Done]** Checking on disk if the file has already been partially downloaded when creating a Torrent instance
+ * **[Done]** Handling spontaneous connections from peers
+ * **[Done]** Having the client download from other instances of itself for testing
+ * **[Done]** Download a whole file from the Internet (500 MB ISO downloaded at 17 MB/s)
+ * **[in progress]** Exchanging file pieces with peers
+ * **[to be done]** Handling Torrent with multiple files
+ * **[to be done]** Starting downloads from a magnet link
  * **[to be done]** ...
- 
+
 
 ### BitTorrent resources
 

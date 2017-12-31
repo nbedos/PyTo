@@ -192,15 +192,18 @@ class Torrent:
                 f.truncate(file_length)
 
             f.close()
+            # Reopen file in read/write mode
             f = open(file_path, "rb+")
 
             self.structure[(offset, offset + file_length - 1)] = (f, asyncio.Lock())
             offset += file_length
 
-        hashes = [h async for h in self.hash_files()]
-        for piece_index, hash in enumerate(hashes):
-            if hash == self.hashes[piece_index]:
-                self.piece_manager.register_piece_owned(piece_index)
+        owned_pieces = await self.check_pieces_on_disk()
+        for piece_index in owned_pieces:
+            self.piece_manager.register_piece_owned(piece_index)
+
+        if owned_pieces == set(range(self.piece_manager.nbr_pieces)):
+            self._is_complete = True
 
     def get_peers(self) -> Iterator[Tuple[str, int]]:
         """Send an announce query to the tracker"""
@@ -232,12 +235,21 @@ class Torrent:
         self.piece_manager.remove_peer(p.id, p.pieces)
         del self.peers[(p.ip, p.port)]
 
-    async def hash_files(self):
+    async def check_pieces_on_disk(self):
+        """Return the list of pieces written on disk which have a correct hash"""
+        matching_pieces = set()
         for piece_index in range(self.piece_manager.nbr_pieces):
             piece = await self.read_piece(piece_index)
-            yield sha1(piece).digest()
+            if sha1(piece).digest() == self.hashes[piece_index]:
+                matching_pieces.add(piece_index)
+        return matching_pieces
 
     async def is_complete(self):
+        """Return True if the download is complete, false otherwise
+
+        The first time this function is called after the download is complete, all files are hashed
+        and the hashes are compared to the content of the metainfo file. If all hashes match,
+        all files are reopened in read only mode to prevent any modification."""
         if self._is_complete:
             return True
 
@@ -245,19 +257,25 @@ class Torrent:
         self.logger.debug("missing pieces: {}".format(all_pieces - self.piece_manager.pieces))
         if self.piece_manager.pieces == all_pieces:
             self.logger.info("Checking pieces hashes...")
-            hashes = [h async for h in self.hash_files()]
-            self._is_complete = (hashes == self.hashes)
+            matching_pieces = await self.check_pieces_on_disk()
+            self._is_complete = (all_pieces == matching_pieces)
             if self._is_complete:
-                # TODO: reopen files read only, synchronize with the reader/writer thread
                 self.logger.debug("Download complete. Nothing more to request")
                 try:
                     self.queue.put_nowait("EVENT_DOWNLOAD_COMPLETE")
                 except asyncio.QueueFull:
                     self.logger.warning("Queue full, could not write event")
                 self.logger.info("EVENT_DOWNLOAD_COMPLETE")
+
+                for key, (file, lock) in self.structure.items():
+                    with await lock:
+                        name = file.name
+                        file.close()
+                        file = open(name, 'rb')
+                    self.structure[key] = (file, lock)
+
             else:
-                invalid_pieces = set(enumerate(self.hashes)) ^ set(enumerate(hashes))
-                self.logger.debug("invalid pieces: {}".format(invalid_pieces))
+                self.logger.debug("invalid pieces: {}".format(all_pieces - matching_pieces))
 
             return self._is_complete
 
@@ -383,7 +401,6 @@ class Torrent:
         for file, lock in self.structure.values():
             with await lock:
                 file.close()
-
 
 async def init(torrent_file: str, download_dir: str):
     torrent = Torrent.from_file(torrent_file)
@@ -573,5 +590,11 @@ def _validate_structure(data, schema) -> bool:
         return isinstance(data, type(schema))
 
 
+def _reopen(file, mode):
+    name = file.name
+    file.close()
+    return open(name, mode)
+
 if __name__ == '__main__':
     pass
+

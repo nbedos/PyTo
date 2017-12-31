@@ -1,10 +1,9 @@
 """
-Main module for PyTo
-
-Executing this module launches the download of the last Archlinux installation file and is a good
-way to see PyTo working.
+Download a single file from the internet
 """
+import asyncio
 import concurrent.futures
+import logging
 import os.path
 import shutil
 import sys
@@ -15,7 +14,7 @@ EXAMPLES_DIR = os.path.dirname(os.path.abspath(__file__))
 # Add the parent directory of the current file to sys.path so that we can
 # import pyto even if it is not installed
 sys.path.insert(0, os.path.join(EXAMPLES_DIR, os.path.pardir))
-from pyto.torrent import *
+from pyto.torrent import Torrent
 
 
 DATA_DIR = os.path.join(EXAMPLES_DIR, 'data')
@@ -42,8 +41,8 @@ def main():
     async def hypervisor():
         dir = mkdtemp()
 
-        t = await init(arch_torrent, dir)
-        f = asyncio.ensure_future(download(t, 6881))
+        t = await Torrent.create(arch_torrent, dir)
+        f = asyncio.ensure_future(t.download(6881))
 
         item = ""
         while item != "EVENT_DOWNLOAD_COMPLETE" and item != "EVENT_END":

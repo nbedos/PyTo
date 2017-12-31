@@ -49,6 +49,8 @@ class Peer:
         self.buffer = b""
 
         # Peer status
+        # True if the peer initiated the connection
+        self.initiated = True
         self.handshake_done = False
         self.is_choked = True
         self.chokes_me = True
@@ -78,6 +80,7 @@ class Peer:
                 self.logger.debug("Connection failed: {}".format(e))
                 raise ConnectionError("Connection failed")
             self.logger.info("Established connection")
+            self.initiated = False
 
     @classmethod
     async def from_ip(cls, ip: str, port: int):
@@ -114,7 +117,7 @@ class Peer:
         except ValueError:
             self.logger.error("Received invalid message: {}".format(str(data)))
             return
-
+        self.logger.debug("Message received: {}".format(str(message)))
         yield message
 
         while True:
@@ -205,60 +208,7 @@ class Peer:
         return not (self.reader is None and self.writer is None)
 
 
-# TODO: Cleanly end connection when the task is cancelled
-async def exchange(torrent, p: Peer, initiated: bool=False):
-    loop = asyncio.get_event_loop()
 
-    torrent.add_peer(p)
-    torrent.logger.info("new peer added!")
-    if initiated:
-        await p.write([
-            HandShake(torrent.info_hash),
-            BitField(torrent.piece_manager.pieces, torrent.piece_manager.nbr_pieces)
-        ])
-
-    async for message in p.get_messages():
-        # Update the peer with information from the message
-        try:
-            p.handle_message(message)
-        except ValueError as e:
-            p.logger.error("invalid message: {}".format(str(e)))
-            break
-
-        # Update the torrent with information from the message
-        torrent.update_from_message(message, p.id)
-
-        # Commit pieces to disk
-        if torrent.piece_manager.pieces_to_write:
-            await torrent.write_pieces(loop)
-            await torrent.is_complete()
-
-        # Build a suitable answer
-        messages = []
-        for m in torrent.build_answer_to(message, initiated, p.id):
-            if isinstance(m, Piece):
-                # Read disk to add missing info
-                messages.append(await torrent.complement(m))
-            else:
-                messages.append(m)
-
-        # Add requests
-        messages += torrent.build_requests(p)
-
-        # Update peer with messages to be sent
-        for m in messages:
-            if isinstance(m, Request):
-                p.pending.add((m.piece_index, m.block_offset))
-
-        # Send messages
-        try:
-            await p.write(messages)
-        except PeerWriteErrors as e:
-            p.logger.debug("write() failed: {}".format(str(e)))
-            break
-
-    torrent.remove_peer(p)
-    p.close()
 
 
 if __name__ == '__main__':

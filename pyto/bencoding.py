@@ -9,7 +9,7 @@ def bdecode(s: bytes):
 
     ValueError is raised if the whole string is not a valid bencoded value"""
     if isinstance(s, bytes):
-        b, remainder = bdecode_partial(s)
+        b, remainder = _bdecode_partial(s)
         if not remainder:
             return b
         raise ValueError("Invalid Bencoded string (part of the string was not consumed)")
@@ -17,7 +17,7 @@ def bdecode(s: bytes):
     raise ValueError("Invalid Bencoded string (must be bytestring)")
 
 
-def bdecode_partial(s: bytes):
+def _bdecode_partial(s: bytes):
     """Return the first Bencoded value read from the bytestring,
     and the remainder of the bytestring.
 
@@ -44,7 +44,7 @@ def bdecode_partial(s: bytes):
         # Loop until we've reached the end of the list
         while remainder[0:1] != b"e":
             # Read one Bencoded value from the string
-            b, remainder = bdecode_partial(remainder)
+            b, remainder = _bdecode_partial(remainder)
             l.append(b)
         return l, remainder[1:]
     # Dictionary
@@ -54,13 +54,13 @@ def bdecode_partial(s: bytes):
         d = {}
         lastkey = None
         while remainder[0:1] != b"e":
-            key, remainder = bdecode_partial(remainder)
+            key, remainder = _bdecode_partial(remainder)
             if (lastkey is not None) and (key <= lastkey):
                 raise ValueError("Invalid Bencoded dictionary (keys must be sorted)")
 
             # Dictionary key must be a string
             if isinstance(key, bytes):
-                value, remainder = bdecode_partial(remainder)
+                value, remainder = _bdecode_partial(remainder)
                 d[key] = value
             else:
                 raise ValueError("Invalid Bencoded dictionary (keys must be strings)")

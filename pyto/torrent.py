@@ -15,7 +15,7 @@ from typing import Iterator, Tuple, Union, List, Set, Dict, BinaryIO
 from pyto.bencoding import bdecode, bencode
 from pyto.messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, \
     BitField, Request, Piece, Cancel, Port, HandShake
-from pyto.peer import Peer, exchange, PeerConnectErrors
+from pyto.peer import Peer, PeerConnectErrors, PeerWriteErrors
 from pyto.piecemanager import PieceManager
 
 module_logger = logging.getLogger(__name__)
@@ -28,6 +28,7 @@ class TorrentAdapter(logging.LoggerAdapter):
         return '{:>20} {}'.format(self.extra['name'], msg), kwargs
 
 
+# Schemas describing the metainfo dictionary format
 METAINFO_SINGLE_FILE = {
     b'announce': b'bytestring',
     b'info': {
@@ -77,8 +78,29 @@ class Torrent:
         self.logger = TorrentAdapter(module_logger, {'name': self.name})
         self.queue = asyncio.Queue(50)
 
+    def __repr__(self) -> str:
+        return "\n\t".join([
+            "Torrent: {}".format(self.name),
+            "    info_hash: {}".format(self.info_hash),
+            "     announce: {}".format(self.announce),
+            "       length: {}".format(self.length),
+            " piece_length: {}".format(self.piece_manager.default_piece_length),
+            "   nbr_pieces: {}".format(self.piece_manager.nbr_pieces),
+            "       pieces: {}".format(self.piece_manager.pieces),
+        ])
+
     @classmethod
-    def from_file(cls, torrent_file: str):
+    async def create(cls, torrent_file: str, download_dir: str):
+        """Create an instance of the Torrent class from a metainfo file and initialize all the
+        necessary files on disk"""
+        torrent = Torrent._from_file(torrent_file)
+        await torrent.init_files(download_dir)
+        logging.debug(torrent)
+        return torrent
+
+    @classmethod
+    def _from_file(cls, torrent_file: str):
+        """Create an instance of Torrent from a metainfo file"""
         with open(torrent_file, "rb") as f:
             m = bdecode(f.read())
 
@@ -108,23 +130,16 @@ class Torrent:
 
         return cls(announce, name, contents, info_hash, hashes, piece_length)
 
-    def __repr__(self) -> str:
-        return "\n\t".join([
-            "Torrent: {}".format(self.name),
-            "    info_hash: {}".format(self.info_hash),
-            "     announce: {}".format(self.announce),
-            "       length: {}".format(self.length),
-            " piece_length: {}".format(self.piece_manager.default_piece_length),
-            "   nbr_pieces: {}".format(self.piece_manager.nbr_pieces),
-            "       pieces: {}".format(self.piece_manager.pieces),
-        ])
-
     @staticmethod
     def _seek_and_read(file: BinaryIO, part_offset: int, part_length: int):
         file.seek(part_offset)
         return file.read(part_length)
 
     async def read_piece(self, piece_index: int):
+        """Read the requested piece from disk
+
+        This function uses locks for synchronization with other disk operations.
+        """
         self.logger.debug("reading piece #{}".format(piece_index))
         loop = asyncio.get_event_loop()
         piece_offset = piece_index * self.piece_manager.default_piece_length
@@ -151,6 +166,10 @@ class Torrent:
         file.write(part)
 
     async def write_pieces(self, loop):
+        """Write on disk all the pieces saved in the torrent instance
+
+        This function uses locks for synchronization with other disk operations.
+        """
         my_pieces_to_write = self.piece_manager.pieces_to_write.copy()
         self.piece_manager.pieces_to_write = dict([])
         # TODO: We might lose pieces if we crash here
@@ -175,7 +194,9 @@ class Torrent:
                                                    part)
 
     async def init_files(self, download_dir: str):
-        """Create missing files, check existing ones"""
+        """Read all the torrent files on disk and check which pieces have been downloaded.
+        If files are missing, create them together with the right directory structure
+        """
         os.makedirs(download_dir, exist_ok=True)
 
         offset = 0
@@ -204,9 +225,15 @@ class Torrent:
 
         if owned_pieces == set(range(self.piece_manager.nbr_pieces)):
             self._is_complete = True
+            # Reopen files in read only mode
+            for key in self.structure:
+                file, lock = self.structure[key]
+                name = file.name
+                file.close()
+                self.structure[key] = open(name, 'rb'), lock
 
     def get_peers(self) -> Iterator[Tuple[str, int]]:
-        """Send an announce query to the tracker"""
+        """Send an announce query to the tracker to get a list of peers"""
         h = {
             'info_hash': self.info_hash,
             'peer_id': "-HT00000000000000000",
@@ -228,15 +255,16 @@ class Torrent:
         if (p.ip, p.port) in self.blacklist:
             raise ValueError("This peer is blacklisted")
 
-        if (p.ip, p.port) not in self.peers:
-            self.peers[(p.ip, p.port)] = p
+        ips = [(q.ip, q.port) for q in self.peers.values()]
+        if (p.ip, p.port) not in ips:
+            self.peers[p.id] = p
 
     def remove_peer(self, p: Peer):
         self.piece_manager.remove_peer(p.id, p.pieces)
-        del self.peers[(p.ip, p.port)]
+        del self.peers[p.id]
 
     async def check_pieces_on_disk(self):
-        """Return the list of pieces written on disk which have a correct hash"""
+        """Return the list of pieces on disk which have a correct hash"""
         matching_pieces = set()
         for piece_index in range(self.piece_manager.nbr_pieces):
             piece = await self.read_piece(piece_index)
@@ -244,10 +272,11 @@ class Torrent:
                 matching_pieces.add(piece_index)
         return matching_pieces
 
+    # FIXME: This function might be called multiple times and send several DOWNLOAD_COMPLETE events
     async def is_complete(self):
         """Return True if the download is complete, false otherwise
 
-        The first time this function is called after the download is complete, all files are hashed
+        The first time this function is called after the download completes, all pieces are hashed
         and the hashes are compared to the content of the metainfo file. If all hashes match,
         all files are reopened in read only mode to prevent any modification."""
         if self._is_complete:
@@ -279,23 +308,22 @@ class Torrent:
 
             return self._is_complete
 
-    def build_answer_to(self, message: Message, peer_id: int, initiated: bool) -> List[Message]:
+    def build_answer_to(self, message: Message, peer: Peer) -> List[Message]:
         handler_name = '_build_answer_to_' + message.__class__.__name__
         if hasattr(self, handler_name):
             handler = getattr(self, handler_name)
-            return handler(message, initiated, peer_id)
+            return handler(message, peer)
         else:
             return []
 
-    def _build_answer_to_HandShake(self, message: HandShake, peer_id: int, initiated) -> List[
-        Message]:
-        if initiated:
-            return []
-        else:
+    def _build_answer_to_HandShake(self, message: HandShake, peer) -> List[Message]:
+        if peer.initiated:
             return [
                 HandShake(self.info_hash),
                 BitField(self.piece_manager.pieces, self.piece_manager.nbr_pieces)
             ]
+        else:
+            return []
 
     def _build_answer_to_Interested(self, *_) -> List[Message]:
         # TODO: update peer status
@@ -305,15 +333,15 @@ class Torrent:
         # TODO: update peer status
         return [Choke()]
 
-    def _build_answer_to_BitField(self, message: BitField, peer_id: int, _) -> List[Message]:
+    def _build_answer_to_BitField(self, message: BitField, peer: Peer) -> List[Message]:
         # Check if the peer has any interesting piece
         try:
-            self.piece_manager.next_block(message.pieces, peer_id)
+            self.piece_manager.next_block(message.pieces, peer.id)
             return [Interested()]
         except IndexError:
             return []
 
-    def _build_answer_to_Request(self, message: Request, *_) -> List[Message]:
+    def _build_answer_to_Request(self, message: Request, _) -> List[Message]:
         block = b""
         return [
             Piece(16384,
@@ -322,7 +350,7 @@ class Torrent:
                   block)
         ]
 
-    def _build_answer_to_Piece(self, message: Piece, *_) -> List[Message]:
+    def _build_answer_to_Piece(self, message: Piece, _) -> List[Message]:
         if message.piece_index in self.piece_manager.pieces:
             return [Have(message.piece_index)]
         else:
@@ -402,65 +430,114 @@ class Torrent:
             with await lock:
                 file.close()
 
-async def init(torrent_file: str, download_dir: str):
-    torrent = Torrent.from_file(torrent_file)
-    await torrent.init_files(download_dir)
-    logging.debug(torrent)
-    return torrent
+    # TODO: Cleanly end connection when the task is cancelled
+    async def exchange(self, p: Peer):
+        """Exchange data with the peer"""
+        loop = asyncio.get_event_loop()
 
+        self.add_peer(p)
+        self.logger.info("new peer added!")
+        if not p.initiated:
+            await p.write([
+                HandShake(self.info_hash),
+                BitField(self.piece_manager.pieces, self.piece_manager.nbr_pieces)
+            ])
 
-async def download(torrent: Torrent, listen_port: int):
-    # Schedule a connection to each peer
-    pending_connections = set()
-    for ip, port in torrent.get_peers():
-        f = asyncio.ensure_future(Peer.from_ip(ip, port))
-        torrent.futures.add(f)
-        pending_connections.add(f)
-
-    # Setup a server to accept incoming connections
-    def accept_callback(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        ip, port = writer.get_extra_info('peername')
-        p = Peer(ip, port, reader, writer)
-        f = asyncio.ensure_future(exchange(torrent, p, initiated=False))
-        torrent.futures.add(f)
-
-    torrent.server = await asyncio.start_server(accept_callback, host="", port=listen_port)
-    f = asyncio.ensure_future(torrent.server.wait_closed())
-    torrent.futures.add(f)
-    try:
-        torrent.queue.put_nowait("EVENT_ACCEPT_CONNECTIONS")
-        torrent.logger.info("EVENT_ACCEPT_CONNECTIONS")
-    except asyncio.QueueFull:
-        torrent.logger.warning("Queue full, could not write event")
-
-    while torrent.futures:
-        try:
-            done, torrent.futures = await asyncio.wait(torrent.futures,
-                                                       return_when=asyncio.FIRST_COMPLETED)
-        except asyncio.CancelledError:
-            break
-
-        for item in done:
+        async for message in p.get_messages():
+            # Update the peer with information from the message
             try:
-                result = item.result()
-            except asyncio.CancelledError:
-                torrent.logger.info("Task cancelled: {}".format(item))
-            except PeerConnectErrors:
-                pass
-            # We catch ALL exceptions here, otherwise one of our futures may fail silently
-            except Exception:
-                torrent.logger.exception("Future failed")
-                await torrent.stop()
-                raise
-            else:
-                if item in pending_connections:
-                    p = result
-                    f = asyncio.ensure_future(exchange(torrent, p, initiated=True))
-                    torrent.futures.add(f)
-                    pending_connections.remove(item)
+                p.handle_message(message)
+            except ValueError as e:
+                p.logger.error("invalid message: {}".format(str(e)))
+                break
 
-    print(torrent.futures)
-    await torrent.stop()
+            # Update the torrent with information from the message
+            self.update_from_message(message, p.id)
+
+            # Commit pieces to disk
+            if self.piece_manager.pieces_to_write:
+                await self.write_pieces(loop)
+                await self.is_complete()
+
+            # Build a suitable answer
+            messages = []
+            for m in self.build_answer_to(message, p):
+                if isinstance(m, Piece):
+                    # Read disk to add missing info
+                    messages.append(await self.complement(m))
+                else:
+                    messages.append(m)
+
+            # Add requests
+            messages += self.build_requests(p)
+
+            # Update peer with messages to be sent
+            for m in messages:
+                if isinstance(m, Request):
+                    p.pending.add((m.piece_index, m.block_offset))
+
+            # Send messages
+            try:
+                await p.write(messages)
+            except PeerWriteErrors as e:
+                p.logger.debug("write() failed: {}".format(str(e)))
+                break
+
+        self.remove_peer(p)
+        p.close()
+
+    async def download(self, listen_port: int):
+        # Schedule a connection to each peer
+        pending_connections = set()
+        for ip, port in self.get_peers():
+            f = asyncio.ensure_future(Peer.from_ip(ip, port))
+            self.futures.add(f)
+            pending_connections.add(f)
+
+        # Setup a server to accept incoming connections
+        def accept_callback(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+            ip, port = writer.get_extra_info('peername')
+            p = Peer(ip, port, reader, writer)
+            f = asyncio.ensure_future(self.exchange(p))
+            self.futures.add(f)
+
+        self.server = await asyncio.start_server(accept_callback, host="", port=listen_port)
+        f = asyncio.ensure_future(self.server.wait_closed())
+        self.futures.add(f)
+        try:
+            self.queue.put_nowait("EVENT_ACCEPT_CONNECTIONS")
+            self.logger.info("EVENT_ACCEPT_CONNECTIONS")
+        except asyncio.QueueFull:
+            self.logger.warning("Queue full, could not write event")
+
+        while self.futures:
+            try:
+                done, self.futures = await asyncio.wait(self.futures,
+                                                        return_when=asyncio.FIRST_COMPLETED)
+            except asyncio.CancelledError:
+                break
+
+            for item in done:
+                try:
+                    result = item.result()
+                except asyncio.CancelledError:
+                    self.logger.info("Task cancelled: {}".format(item))
+                except PeerConnectErrors:
+                    pass
+                # We catch ALL exceptions here, otherwise one of our futures may fail silently
+                except Exception:
+                    self.logger.exception("Future failed")
+                    await self.stop()
+                    raise
+                else:
+                    if item in pending_connections:
+                        p = result
+                        f = asyncio.ensure_future(self.exchange(p))
+                        self.futures.add(f)
+                        pending_connections.remove(item)
+
+        print(self.futures)
+        await self.stop()
 
 
 def _split(l: List, n: int) -> List:
@@ -476,6 +553,7 @@ def _split(l: List, n: int) -> List:
 
 
 def _sanitize(filename: str) -> str:
+    """Remove potentially treacherous characters from a path name"""
     allowed_characters = {' ', '-', '[', ']', '}', '{', '_', '.'}
     return "".join([c for c in filename if c.isalnum() or c in allowed_characters]).rstrip()
 
@@ -589,11 +667,6 @@ def _validate_structure(data, schema) -> bool:
     else:
         return isinstance(data, type(schema))
 
-
-def _reopen(file, mode):
-    name = file.name
-    file.close()
-    return open(name, mode)
 
 if __name__ == '__main__':
     pass

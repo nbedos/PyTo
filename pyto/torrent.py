@@ -13,8 +13,8 @@ from struct import unpack, iter_unpack, error as struct_error
 from typing import Iterator, Tuple, Union, List, Set, Dict, BinaryIO
 
 from pyto.bencoding import bdecode, bencode
-from pyto.messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, \
-    BitField, Request, Piece, Cancel, Port, HandShake
+from pyto.messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInterested,\
+                          Have, BitField, Request, Piece, Cancel, Port, HandShake
 from pyto.peer import Peer, PeerConnectErrors, PeerWriteErrors
 from pyto.piecemanager import PieceManager
 
@@ -56,8 +56,8 @@ METAINFO_MULTIPLE_FILES = {
 class Torrent:
     """Represent a Torrent file"""
 
-    def __init__(self, announce: str, name: str, contents, info_hash: bytes, hashes: List[bytes],
-                 piece_length: int):
+    def __init__(self, announce: str, name: str, contents, info_hash: bytes,
+                 hashes: List[bytes], piece_length: int):
         self.announce = announce
         self.name = _sanitize(name)
         self.contents = contents
@@ -91,8 +91,8 @@ class Torrent:
 
     @classmethod
     async def create(cls, torrent_file: str, download_dir: str):
-        """Create an instance of the Torrent class from a metainfo file and initialize all the
-        necessary files on disk"""
+        """Create an instance of the Torrent class from a metainfo file and initialize all
+        the necessary files on disk"""
         torrent = Torrent._from_file(torrent_file)
         await torrent.init_files(download_dir)
         logging.debug(torrent)
@@ -129,6 +129,50 @@ class Torrent:
                 contents.append((directory, filename, file_dict[b'length']))
 
         return cls(announce, name, contents, info_hash, hashes, piece_length)
+
+    async def init_files(self, download_dir: str):
+        """Read all the torrent files on disk and check which pieces have been downloaded.
+        If files are missing, create them together with the right directory structure
+        """
+        os.makedirs(download_dir, exist_ok=True)
+
+        offset = 0
+        just_created = True
+        for dirname, filename, file_length in self.contents:
+            file_directory = os.path.join(download_dir, dirname)
+            os.makedirs(file_directory, exist_ok=True)
+            file_path = os.path.join(file_directory, filename)
+            # Opening a file in 'rb+' (read, write, binary) will raise FileNotFoundError
+            # if the file is missing. So we have to open it in write only mode to create
+            # the file, and then reopen it in 'rb+' mode.
+            try:
+                f = open(file_path, "rb+")
+                if os.stat(file_path).st_size != file_length:
+                    f.truncate(file_length)
+            except FileNotFoundError:
+                f = open(file_path, "wb")
+                f.truncate(file_length)
+                f.close()
+                f = open(file_path, "rb+")
+            else:
+                just_created = False
+
+            self.structure[(offset, offset + file_length - 1)] = (f, asyncio.Lock())
+            offset += file_length
+
+        if not just_created:
+            owned_pieces = await self.check_pieces_on_disk()
+            for piece_index in owned_pieces:
+                self.piece_manager.register_piece_owned(piece_index)
+
+            if owned_pieces == set(range(self.piece_manager.nbr_pieces)):
+                self._is_complete = True
+                # Reopen files in read only mode
+                for key in self.structure:
+                    file, lock = self.structure[key]
+                    name = file.name
+                    file.close()
+                    self.structure[key] = open(name, 'rb'), lock
 
     @staticmethod
     def _seek_and_read(file: BinaryIO, part_offset: int, part_length: int):
@@ -193,45 +237,6 @@ class Torrent:
                                                    part_offset_in_file,
                                                    part)
 
-    async def init_files(self, download_dir: str):
-        """Read all the torrent files on disk and check which pieces have been downloaded.
-        If files are missing, create them together with the right directory structure
-        """
-        os.makedirs(download_dir, exist_ok=True)
-
-        offset = 0
-        for dirname, filename, file_length in self.contents:
-            file_directory = os.path.join(download_dir, dirname)
-            os.makedirs(file_directory, exist_ok=True)
-            file_path = os.path.join(file_directory, filename)
-            try:
-                f = open(file_path, "rb")
-                if os.stat(file_path).st_size != file_length:
-                    f.truncate(file_length)
-            except FileNotFoundError:
-                f = open(file_path, "wb")
-                f.truncate(file_length)
-
-            f.close()
-            # Reopen file in read/write mode
-            f = open(file_path, "rb+")
-
-            self.structure[(offset, offset + file_length - 1)] = (f, asyncio.Lock())
-            offset += file_length
-
-        owned_pieces = await self.check_pieces_on_disk()
-        for piece_index in owned_pieces:
-            self.piece_manager.register_piece_owned(piece_index)
-
-        if owned_pieces == set(range(self.piece_manager.nbr_pieces)):
-            self._is_complete = True
-            # Reopen files in read only mode
-            for key in self.structure:
-                file, lock = self.structure[key]
-                name = file.name
-                file.close()
-                self.structure[key] = open(name, 'rb'), lock
-
     def get_peers(self) -> Iterator[Tuple[str, int]]:
         """Send an announce query to the tracker to get a list of peers"""
         h = {
@@ -272,13 +277,14 @@ class Torrent:
                 matching_pieces.add(piece_index)
         return matching_pieces
 
-    # FIXME: This function might be called multiple times and send several DOWNLOAD_COMPLETE events
+    # FIXME: This function might be called multiple times and send several DOWNLOAD_COMPLETE
+    # events
     async def is_complete(self):
         """Return True if the download is complete, false otherwise
 
-        The first time this function is called after the download completes, all pieces are hashed
-        and the hashes are compared to the content of the metainfo file. If all hashes match,
-        all files are reopened in read only mode to prevent any modification."""
+        The first time this function is called after the download completes, all pieces are
+        hashed and the hashes are compared to the content of the metainfo file. If all hashes
+        match, all files are reopened in read only mode to prevent any modification."""
         if self._is_complete:
             return True
 
@@ -417,11 +423,13 @@ class Torrent:
             reqs.append(Request(piece_index, block_offset, block_length))
         return reqs
 
+    # FIXME: Change stop() not to send multiple events when the function is called multiple times
     async def stop(self):
         print(self.futures)
         self.queue.put_nowait("EVENT_END")
         self.logger.info("EVENT_END")
-        self.server.close()
+        if self.server is not None:
+            self.server.close()
         # End connections with peers
         for peer in self.peers.values():
             peer.close()
@@ -608,9 +616,9 @@ def metainfo(directory: str, piece_length: int, announce: str) -> Dict:
     hashes = []
     filestats = []
     directory = os.path.realpath(directory)
-    for dirpath, _, files in os.walk(directory, topdown=False):
-        for file in files:
-            full_path = os.path.join(dirpath, file)
+    for dirpath, _, filenames in os.walk(directory, topdown=False):
+        for filename in filenames:
+            full_path = os.path.join(dirpath, filename)
             relative_path = os.path.relpath(full_path, directory)
             filestats.append({
                 b'path': [c.encode('utf-8') for c in _path_components(relative_path)],

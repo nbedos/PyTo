@@ -30,8 +30,14 @@ Milestones:
  * **[Done]** Have the client download from other instances of itself for testing
  * **[Done]** Download a whole file from the Internet (500 MB ISO downloaded at 30 MB/s)
  * **[Done]** Handle Torrents with multiple files
+ * **[in progress]** Improve tracker requests:
+    * ~~Use aiohttp instead of urllib for tracker requests (HTTP protocol)~~
+    * Query trackers continuously instead of just once after creation of the Torrent instance
+    * Add support for 'announce-list' key in metainfo files
+    * Add a common interface for both HTTP and UDP trackers
+    * Add support for UDP trackers (BEP 15)
  * **[to be done]** Implement a choking algorithm
- * **[to be done]** Start downloads from a magnet link
+ * **[to be done]** Implement DHT and add support for magnet links
  * **[to be done]** Setup an API to control the exchange of data (pause, restart, throttle...)
  * **[to be done]** Allow users to easily manage multiple simultaneous downloads
  * **[to be done]** ...

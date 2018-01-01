@@ -1,12 +1,12 @@
 import asyncio
 import concurrent.futures
 import filecmp
+import functools
 import logging
 import os
 import shutil
 import tempfile
 import unittest
-import unittest.mock
 
 from typing import List
 
@@ -44,27 +44,24 @@ def two_peer_swarm(data_dir, seeder_port=6881, leecher_port=6882):
     # The leecher's directory is empty
     os.makedirs(leecher_dir, exist_ok=True)
 
-    # Create on the fly metainfo file on disk
+    # Create metainfo file on disk on the fly
     torrent_file = os.path.join(tmp_dir, 'metainfo.torrent')
     m = metainfo(data_dir, 32768, 'http://www.example.com/announce')
     with open(torrent_file, 'wb') as f:
         f.write(bencode(m))
 
-    # Start both torrents
+    async def mock_get_peers(r):
+        return r
+
+    # Start seeder
     torrent_seeder = loop.run_until_complete(Torrent.create(torrent_file, seeder_dir))
+    # Override get_peers method to return an empty list
+    torrent_seeder.get_peers = functools.partial(mock_get_peers, [])
+
+    # Start leecher
     torrent_leecher = loop.run_until_complete(Torrent.create(torrent_file, leecher_dir))
-
-    async def seeder():
-        with unittest.mock.patch.object(Torrent, 'get_peers') as get_peers_mocked:
-            # Mock Torrent.get_peers to return an empty list
-            get_peers_mocked.return_value = []
-            await torrent_seeder.download(seeder_port)
-
-    async def leecher():
-        with unittest.mock.patch.object(Torrent, 'get_peers') as get_peers_mocked:
-            # Mock Torrent.get_peers to return the address of the seeder
-            get_peers_mocked.return_value = [("127.0.0.1", seeder_port)]
-            await torrent_leecher.download(leecher_port)
+    # Override get_peers method to return the address of the seeder
+    torrent_leecher.get_peers = functools.partial(mock_get_peers, [("127.0.0.1", seeder_port)])
 
     async def wait_for(torrent: Torrent, events: List[str]):
         event = None
@@ -73,7 +70,7 @@ def two_peer_swarm(data_dir, seeder_port=6881, leecher_port=6882):
         return event
 
     # Futures
-    f_seeder = asyncio.ensure_future(seeder())
+    f_seeder = asyncio.ensure_future(torrent_seeder.download(seeder_port))
     f_wait_accept_conns = asyncio.ensure_future(
         wait_for(torrent_seeder, ["EVENT_ACCEPT_CONNECTIONS", "EVENT_END"])
     )
@@ -92,7 +89,8 @@ def two_peer_swarm(data_dir, seeder_port=6881, leecher_port=6882):
             # the download
             if item == f_wait_accept_conns:
                 if result == "EVENT_ACCEPT_CONNECTIONS":
-                    f_leecher = asyncio.ensure_future(leecher(), loop=loop)
+                    f_leecher = asyncio.ensure_future(torrent_leecher.download(leecher_port),
+                                                      loop=loop)
                     f_download_complete = asyncio.ensure_future(
                         wait_for(torrent_leecher, ["EVENT_DOWNLOAD_COMPLETE", "EVENT_END"])
                     )

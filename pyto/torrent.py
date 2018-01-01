@@ -3,11 +3,11 @@ Torrent module
 
 An instance of the Torrent class represents a Torrent file
 """
+import aiohttp
 import asyncio
 import logging
 import os
 import urllib.parse
-import urllib.request
 from hashlib import sha1
 from struct import unpack, iter_unpack, error as struct_error
 from typing import Iterator, Tuple, Union, List, Set, Dict, BinaryIO
@@ -237,8 +237,7 @@ class Torrent:
                                                    part_offset_in_file,
                                                    part)
 
-    # TODO: Switch to asyncio for I/O
-    def get_peers(self) -> Iterator[Tuple[str, int]]:
+    async def get_peers(self):
         """Send an announce query to the tracker to get a list of peers"""
         h = {
             'info_hash': self.info_hash,
@@ -253,9 +252,11 @@ class Torrent:
 
         url = "{}?{}".format(self.announce, urllib.parse.urlencode(h))
         self.logger.debug("announce = {}".format(url))
-        with urllib.request.urlopen(url) as response:
-            d = bdecode(response.read())
-            return map(_decode_ipv4, _split(d[b"peers"], 6))
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                print(response.status)
+                d = bdecode(await response.read())
+                return map(_decode_ipv4, _split(d[b"peers"], 6))
 
     def add_peer(self, p):
         if (p.ip, p.port) in self.blacklist:
@@ -485,7 +486,7 @@ class Torrent:
     async def download(self, listen_port: int):
         # Schedule a connection to each peer
         pending_connections = set()
-        for ip, port in self.get_peers():
+        for ip, port in await self.get_peers():
             f = asyncio.ensure_future(Peer.from_ip(ip, port, self.name))
             self.futures.add(f)
             pending_connections.add(f)

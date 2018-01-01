@@ -31,13 +31,16 @@ KEEPALIVE_TIMEOUT = 120
 class PeerAdapter(logging.LoggerAdapter):
     """Add the port and ip of the Peer to logger messages"""
     def process(self, msg, kwargs):
-        return '{:>15}:{:<5} {}'.format(self.extra['ip'], self.extra['port'], msg), kwargs
+        header = '{:>20} {:>15}:{:<5} {}'.format(self.extra['name'],
+                                                 self.extra['ip'],
+                                                 self.extra['port'], msg)
+        return header, kwargs
 
 
 class Peer:
     peer_id = 0
 
-    def __init__(self, ip: str, port: int, reader, writer):
+    def __init__(self, ip: str, port: int, reader, writer, name=""):
         self.id = Peer.peer_id
         Peer.peer_id += 1
 
@@ -62,7 +65,12 @@ class Peer:
         self.pending = set()
         self.pending_target = 30
 
-        self.logger = PeerAdapter(module_logger, {'ip': self.ip, 'port': self.port})
+        extra = {
+            'name': name,
+            'ip': self.ip,
+            'port': self.port
+        }
+        self.logger = PeerAdapter(module_logger, extra)
         if not (reader is None and writer is None):
             self.logger.info("Peer already connected")
 
@@ -83,8 +91,8 @@ class Peer:
             self.initiated = False
 
     @classmethod
-    async def from_ip(cls, ip: str, port: int):
-        p = cls(ip, port, None, None)
+    async def from_ip(cls, ip: str, port: int, name=""):
+        p = cls(ip, port, None, None, name)
         await p.connect()
         return p
 
@@ -105,8 +113,8 @@ class Peer:
 
         return data
 
-    async def get_messages(self) -> AsyncIterable:
-        """"Generator returning the Messages sent by the peer"""
+    async def read_messages(self) -> AsyncIterable:
+        """"Return Messages received from the peer"""
         try:
             data = await self.read_exactly(HandShake.length_v1)
         except EOFError:
@@ -137,6 +145,16 @@ class Peer:
             self.logger.debug("Message received: {}".format(str(message)))
             yield message
 
+    async def messages(self) -> AsyncIterable:
+        """Yield a message read on the network after updating the Peer instance"""
+        async for message in self.read_messages():
+            try:
+                self.handle_message(message)
+            except ValueError as e:
+                self.logger.error("invalid message: {}".format(str(e)))
+                break
+            yield message
+
     async def write(self, messages: List[Message]):
         """Send all listed messages to the peer
 
@@ -147,6 +165,18 @@ class Peer:
         bytes_messages = b"".join(map(lambda m: m.to_bytes(), messages))
         self.writer.write(bytes_messages)
         await self.writer.drain()
+
+    async def send(self, messages: List[Message]):
+        """Send messages on the network after updating the Peer instance"""
+        for m in messages:
+            if isinstance(m, Request):
+                self.pending.add((m.piece_index, m.block_offset))
+
+        try:
+            await self.write(messages)
+        except PeerWriteErrors as e:
+            self.logger.debug("write() failed: {}".format(str(e)))
+            raise
 
     def close(self):
         self.logger.debug("Connection closed")
@@ -206,9 +236,6 @@ class Peer:
 
     def is_connected(self):
         return not (self.reader is None and self.writer is None)
-
-
-
 
 
 if __name__ == '__main__':

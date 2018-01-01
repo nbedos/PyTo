@@ -1,11 +1,10 @@
 import secrets
 import unittest
-from unittest import TestCase
 
 from pyto.piecemanager import PieceManager
 
 
-class TestPieceManager(TestCase):
+class TestPieceManager(unittest.TestCase):
     def test_piece_length(self):
         with self.subTest(case="Last piece length is a multiple of the block length"):
             p = PieceManager(file_length=13, piece_length=4, block_length=1)

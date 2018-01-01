@@ -124,15 +124,13 @@ class PieceManager:
             except KeyError:
                 pass
 
-    def next_block(self,
-                   peer_pieces: Set[int],
-                   peer_id: int) -> Tuple[int, int]:
+    def next_block(self, peer_pieces: Set[int], peer_id: int) -> Tuple[int, int]:
         """Return the most interesting block to download as a tuple (piece_index, block_offset)
 
         IndexError is raised if no block is eligible for download"""
         candidates: Set[Tuple[int, int]] = set()
 
-        # Choice #1: Choose a block which has not been requested yet and which belongs to a piece
+        # Choice #1: Pick a block which has not been requested yet and which belongs to a piece
         # owned by the peer
         for (piece_index, block_offset), peers in self.requests.items():
             if (piece_index in peer_pieces) and (not peers):

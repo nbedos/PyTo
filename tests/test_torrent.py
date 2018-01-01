@@ -1,5 +1,4 @@
 import asyncio
-import filecmp
 import os
 import shutil
 import tempfile
@@ -66,17 +65,11 @@ class TestMetainfo(unittest.TestCase):
                     self.assertEqual(m_computed[b'info'][key], m_target[b'info'][key])
 
     def test_init_files(self):
+        """Check the behaviour of the function for various starting directories"""
         source_dir = os.path.join(DATA_DIR, 'files', 'multiple_files')
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         torrent_file = os.path.join(DATA_DIR, 'torrent_files', 'multiple_files.torrent')
-        # ------------ TORRENT LAYOUT ------------
-        #  File               | Size    | Pieces
-        # --------------------+---------+---------
-        # dir1/dir2/file3.dat |  12430  |   0
-        # dir1/file2.dat      | 100653  | 0-6
-        # file1.dat           | 100673  | 6-13
-        #                     |         |
 
         with self.subTest(case='All files missing'):
             """Create a torrent instance in an empty directory, check that it is populated as 
@@ -95,7 +88,7 @@ class TestMetainfo(unittest.TestCase):
             shutil.rmtree(tmp_dir)
 
         with self.subTest(case='Files already downloaded'):
-            """We get a copy of files from DATA_DIR/files/multiple_files/ and start a Torrent 
+            """Get a copy of files from DATA_DIR/files/multiple_files/ and start a Torrent 
             instance with these files"""
             tmp_dir = tempfile.mkdtemp()
             target_dir = os.path.join(tmp_dir, 'multiple_files')
@@ -110,13 +103,21 @@ class TestMetainfo(unittest.TestCase):
             shutil.rmtree(tmp_dir)
 
         with self.subTest(case='Files partially downloaded'):
-            """We get a copy of files in DATA_DIR/files/multiple_files/ and override a few bytes
+            """Get a copy of files from DATA_DIR/files/multiple_files/ and override a few bytes
             of each file to simulate a partial download"""
             tmp_dir = tempfile.mkdtemp()
             target_dir = os.path.join(tmp_dir, 'multiple_files')
             shutil.copytree(source_dir, target_dir)
 
-            # Overwrite the first few bytes of each file to invalidate pieces 0, 3 and 6 :
+            # ------------ TORRENT LAYOUT ------------
+            #  File               | Size    | Pieces
+            # --------------------+---------+---------
+            # dir1/dir2/file3.dat |  12430  |   0
+            # dir1/file2.dat      | 100653  | 0-6
+            # file1.dat           | 100673  | 6-13
+            #                     |         |
+
+            # Overwrite the first few bytes of each file to invalidate pieces 0 and 6 :
             for dirpath, _, filenames in os.walk(target_dir):
                 for filename in filenames:
                     with open(os.path.join(dirpath, filename), "rb+") as file:
@@ -132,6 +133,8 @@ class TestMetainfo(unittest.TestCase):
             loop.run_until_complete(t.stop())
             shutil.rmtree(tmp_dir)
 
+        loop.close()
+
 
 class TestTorrentCreation(unittest.TestCase):
     def test_from_file(self):
@@ -142,6 +145,10 @@ class TestTorrentCreation(unittest.TestCase):
             with self.subTest(filename=filename):
                 Torrent._from_file(filename)
 
+    # TODO
+    def test_get_peers(self):
+        pass
+
 
 if __name__ == '__main__':
-        unittest.main()
+    unittest.main()

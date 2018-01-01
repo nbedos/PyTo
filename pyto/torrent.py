@@ -237,6 +237,7 @@ class Torrent:
                                                    part_offset_in_file,
                                                    part)
 
+    # TODO: Switch to asyncio for I/O
     def get_peers(self) -> Iterator[Tuple[str, int]]:
         """Send an announce query to the tracker to get a list of peers"""
         h = {
@@ -451,14 +452,7 @@ class Torrent:
                 BitField(self.piece_manager.pieces, self.piece_manager.nbr_pieces)
             ])
 
-        async for message in p.get_messages():
-            # Update the peer with information from the message
-            try:
-                p.handle_message(message)
-            except ValueError as e:
-                p.logger.error("invalid message: {}".format(str(e)))
-                break
-
+        async for message in p.messages():
             # Update the torrent with information from the message
             self.update_from_message(message, p.id)
 
@@ -479,16 +473,10 @@ class Torrent:
             # Add requests
             messages += self.build_requests(p)
 
-            # Update peer with messages to be sent
-            for m in messages:
-                if isinstance(m, Request):
-                    p.pending.add((m.piece_index, m.block_offset))
-
-            # Send messages
             try:
-                await p.write(messages)
+                await p.send(messages)
             except PeerWriteErrors as e:
-                p.logger.debug("write() failed: {}".format(str(e)))
+                p.logger.debug("send() failed: {}".format(str(e)))
                 break
 
         self.remove_peer(p)
@@ -498,14 +486,14 @@ class Torrent:
         # Schedule a connection to each peer
         pending_connections = set()
         for ip, port in self.get_peers():
-            f = asyncio.ensure_future(Peer.from_ip(ip, port))
+            f = asyncio.ensure_future(Peer.from_ip(ip, port, self.name))
             self.futures.add(f)
             pending_connections.add(f)
 
         # Setup a server to accept incoming connections
         def accept_callback(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
             ip, port = writer.get_extra_info('peername')
-            p = Peer(ip, port, reader, writer)
+            p = Peer(ip, port, reader, writer, self.name)
             f = asyncio.ensure_future(self.exchange(p))
             self.futures.add(f)
 

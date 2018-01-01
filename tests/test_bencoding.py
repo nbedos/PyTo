@@ -1,6 +1,8 @@
-import unittest
-from pyto.bencoding import bdecode, bencode
 import os
+import unittest
+
+from pyto.bencoding import bdecode, bencode
+
 
 TEST_FILE_DIR = os.path.dirname(os.path.abspath(__file__))
 # DATA_DIR is TEST_FILE_DIR/data 

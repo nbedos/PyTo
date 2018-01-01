@@ -43,7 +43,7 @@ class TestPeer(unittest.TestCase):
         loop.run_until_complete(futures)
 
     def test_get_messages(self):
-        """Test get_messages"""
+        """Test read_messages"""
         # Create bytestring from list of messages
         all_messages = []
         for bytes_message, message in VALID_HANDSHAKE.items():
@@ -64,7 +64,7 @@ class TestPeer(unittest.TestCase):
             # Create Peer instance
             p = Peer("127.0.0.1", 6992, None, None)
             await p.connect()
-            read_messages = [m async for m in p.get_messages()]
+            read_messages = [m async for m in p.read_messages()]
             p.close()
             return read_messages
 
@@ -74,4 +74,4 @@ class TestPeer(unittest.TestCase):
 
 
 if __name__ == '__main__':
-        unittest.main()
+    unittest.main()

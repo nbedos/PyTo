@@ -130,3 +130,4 @@ class EndToEnd(unittest.TestCase):
                 full_directory_path = os.path.join(test_cases_dir, d)
                 with self.subTest(directory=full_directory_path):
                     two_peer_swarm(full_directory_path)
+

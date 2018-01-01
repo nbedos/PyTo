@@ -484,14 +484,14 @@ class Torrent:
         p.close()
 
     async def download(self, listen_port: int):
-        # Schedule a connection to each peer
+        # Set of all the futures corresponding to connections with peers
         pending_connections = set()
-        for ip, port in await self.get_peers():
-            f = asyncio.ensure_future(Peer.from_ip(ip, port, self.name))
-            self.futures.add(f)
-            pending_connections.add(f)
 
-        # Setup a server to accept incoming connections
+        # Schedule a query for the tracker
+        f_tracker = asyncio.ensure_future(self.get_peers())
+        self.futures.add(f_tracker)
+
+        # Setup a 'server' to accept incoming connections
         def accept_callback(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
             ip, port = writer.get_extra_info('peername')
             p = Peer(ip, port, reader, writer, self.name)
@@ -532,6 +532,11 @@ class Torrent:
                         f = asyncio.ensure_future(self.exchange(p))
                         self.futures.add(f)
                         pending_connections.remove(item)
+                    elif item is f_tracker:
+                        for ip, port in result:
+                            f = asyncio.ensure_future(Peer.from_ip(ip, port, self.name))
+                            self.futures.add(f)
+                            pending_connections.add(f)
 
         print(self.futures)
         await self.stop()

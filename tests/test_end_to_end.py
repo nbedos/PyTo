@@ -46,22 +46,30 @@ def two_peer_swarm(data_dir, seeder_port=6881, leecher_port=6882):
 
     # Create metainfo file on disk on the fly
     torrent_file = os.path.join(tmp_dir, 'metainfo.torrent')
-    m = metainfo(data_dir, 32768, 'http://www.example.com/announce')
+    m = metainfo(data_dir, 32768, [['http://www.example.com/announce']])
     with open(torrent_file, 'wb') as f:
         f.write(bencode(m))
 
-    async def mock_get_peers(r):
+    async def mock_get_peers(r, *_):
         return r
 
     # Start seeder
     torrent_seeder = loop.run_until_complete(Torrent.create(torrent_file, seeder_dir))
     # Override get_peers method to return an empty list
-    torrent_seeder.get_peers = functools.partial(mock_get_peers, [])
+    trackers = []
+    for tracker in torrent_seeder.trackers:
+        tracker.get_peers = functools.partial(mock_get_peers, [])
+        trackers.append(tracker)
+    torrent_seeder.trackers = trackers
 
     # Start leecher
     torrent_leecher = loop.run_until_complete(Torrent.create(torrent_file, leecher_dir))
     # Override get_peers method to return the address of the seeder
-    torrent_leecher.get_peers = functools.partial(mock_get_peers, [("127.0.0.1", seeder_port)])
+    trackers = []
+    for tracker in torrent_leecher.trackers:
+        tracker.get_peers = functools.partial(mock_get_peers, [("127.0.0.1", seeder_port)])
+        trackers.append(tracker)
+    torrent_leecher.trackers = trackers
 
     async def wait_for(torrent: Torrent, events: List[str]):
         event = None

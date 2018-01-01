@@ -3,13 +3,10 @@ Torrent module
 
 An instance of the Torrent class represents a Torrent file
 """
-import aiohttp
 import asyncio
 import logging
 import os
-import urllib.parse
 from hashlib import sha1
-from struct import unpack, iter_unpack, error as struct_error
 from typing import Iterator, Tuple, Union, List, Set, Dict, BinaryIO
 
 from pyto.bencoding import bdecode, bencode
@@ -17,6 +14,8 @@ from pyto.messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInt
                           Have, BitField, Request, Piece, Cancel, Port, HandShake
 from pyto.peer import Peer, PeerConnectErrors, PeerWriteErrors
 from pyto.piecemanager import PieceManager
+from pyto.tracker import Tracker
+
 
 module_logger = logging.getLogger(__name__)
 
@@ -55,10 +54,8 @@ METAINFO_MULTIPLE_FILES = {
 
 class Torrent:
     """Represent a Torrent file"""
-
-    def __init__(self, announce: str, name: str, contents, info_hash: bytes,
+    def __init__(self, announce: List[List[str]], name: str, contents, info_hash: bytes,
                  hashes: List[bytes], piece_length: int):
-        self.announce = announce
         self.name = _sanitize(name)
         self.contents = contents
         self.structure = {}
@@ -75,6 +72,14 @@ class Torrent:
 
         self.futures = set([])
 
+        peer_id = "-PY00000000000000000"
+        port = 6881
+        self.trackers = []
+        # TODO: Fully implement http://bittorrent.org/beps/bep_0012.html for announce-list
+        for trackers in announce:
+            if trackers:
+                self.trackers.append(Tracker(trackers[0], self.info_hash, peer_id, port))
+
         self.logger = TorrentAdapter(module_logger, {'name': self.name})
         self.queue = asyncio.Queue(50)
 
@@ -82,7 +87,6 @@ class Torrent:
         return "\n\t".join([
             "Torrent: {}".format(self.name),
             "    info_hash: {}".format(self.info_hash),
-            "     announce: {}".format(self.announce),
             "       length: {}".format(self.length),
             " piece_length: {}".format(self.piece_manager.default_piece_length),
             "   nbr_pieces: {}".format(self.piece_manager.nbr_pieces),
@@ -104,6 +108,7 @@ class Torrent:
         with open(torrent_file, "rb") as f:
             m = bdecode(f.read())
 
+        # TODO: check type of optional items
         if _validate_structure(m, METAINFO_SINGLE_FILE):
             single_file_mode = True
         elif _validate_structure(m, METAINFO_MULTIPLE_FILES):
@@ -113,7 +118,15 @@ class Torrent:
 
         info = m[b'info']
         info_hash = sha1(bencode(info)).digest()
-        announce = m[b'announce'].decode("utf-8")
+        if b'announce-list' in m:
+            announce = m[b'announce-list']
+        else:
+            announce = [[m[b'announce']]]
+
+        announce_decoded = []
+        for trackers in announce:
+            announce_decoded.append(list(map(lambda x: x.decode('utf-8'), trackers)))
+
         name = info[b'name'].decode("utf-8")
         hashes = _split(info[b'pieces'], sha1().digest_size)
         piece_length = info[b'piece length']
@@ -128,7 +141,7 @@ class Torrent:
                 filename = path_str[-1]
                 contents.append((directory, filename, file_dict[b'length']))
 
-        return cls(announce, name, contents, info_hash, hashes, piece_length)
+        return cls(announce_decoded, name, contents, info_hash, hashes, piece_length)
 
     async def init_files(self, download_dir: str):
         """Read all the torrent files on disk and check which pieces have been downloaded.
@@ -237,27 +250,6 @@ class Torrent:
                                                    part_offset_in_file,
                                                    part)
 
-    async def get_peers(self):
-        """Send an announce query to the tracker to get a list of peers"""
-        h = {
-            'info_hash': self.info_hash,
-            'peer_id': "-HT00000000000000000",
-            'port': 6881,
-            'uploaded': 0,
-            'downloaded': 0,
-            'left': self.length,
-            'event': "started",
-            'compact': 1
-        }
-
-        url = "{}?{}".format(self.announce, urllib.parse.urlencode(h))
-        self.logger.debug("announce = {}".format(url))
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                print(response.status)
-                d = bdecode(await response.read())
-                return map(_decode_ipv4, _split(d[b"peers"], 6))
-
     def add_peer(self, p):
         if (p.ip, p.port) in self.blacklist:
             raise ValueError("This peer is blacklisted")
@@ -301,7 +293,7 @@ class Torrent:
                 try:
                     self.queue.put_nowait("EVENT_DOWNLOAD_COMPLETE")
                 except asyncio.QueueFull:
-                    self.logger.warning("Queue full, could not write event")
+                    self.logger.warning("Queue full, could not write _event")
                 self.logger.info("EVENT_DOWNLOAD_COMPLETE")
 
                 for key, (file, lock) in self.structure.items():
@@ -488,8 +480,11 @@ class Torrent:
         pending_connections = set()
 
         # Schedule a query for the tracker
-        f_tracker = asyncio.ensure_future(self.get_peers())
-        self.futures.add(f_tracker)
+        f_trackers = set()
+        for tracker in self.trackers:
+            f = asyncio.ensure_future(tracker.get_peers(0, 0, 0))
+            f_trackers.add(f)
+            self.futures.add(f)
 
         # Setup a 'server' to accept incoming connections
         def accept_callback(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
@@ -505,7 +500,7 @@ class Torrent:
             self.queue.put_nowait("EVENT_ACCEPT_CONNECTIONS")
             self.logger.info("EVENT_ACCEPT_CONNECTIONS")
         except asyncio.QueueFull:
-            self.logger.warning("Queue full, could not write event")
+            self.logger.warning("Queue full, could not write _event")
 
         while self.futures:
             try:
@@ -532,7 +527,8 @@ class Torrent:
                         f = asyncio.ensure_future(self.exchange(p))
                         self.futures.add(f)
                         pending_connections.remove(item)
-                    elif item is f_tracker:
+                    elif item in f_trackers:
+                        f_trackers.remove(item)
                         for ip, port in result:
                             f = asyncio.ensure_future(Peer.from_ip(ip, port, self.name))
                             self.futures.add(f)
@@ -542,33 +538,10 @@ class Torrent:
         await self.stop()
 
 
-def _split(l: List, n: int) -> List:
-    """Split the list l in chunks of size n"""
-    if n < 0:
-        raise ValueError("n must be >= 0")
-    i = 0
-    chunks = []
-    while l[i:i + n]:
-        chunks.append(l[i:i + n])
-        i = i + n
-    return chunks
-
-
 def _sanitize(filename: str) -> str:
     """Remove potentially treacherous characters from a path name"""
     allowed_characters = {' ', '-', '[', ']', '}', '{', '_', '.'}
     return "".join([c for c in filename if c.isalnum() or c in allowed_characters]).rstrip()
-
-
-def _decode_ipv4(buffer: bytes) -> Tuple[str, int]:
-    try:
-        ip_str, port = unpack(">4sH", buffer)
-        ip = ".".join([str(n) for n, in iter_unpack(">B", ip_str)])
-        return ip, port
-    except struct_error:
-        pass
-    raise ValueError("Invalid (ip, port)")
-
 
 def _intersection(interval1: Tuple[int, int], interval2: Tuple[int, int]):
     """Return the intersection of two closed intervals as an interval
@@ -604,8 +577,11 @@ def _path_components(mypath: str) -> List[str]:
     return components
 
 
-def metainfo(directory: str, piece_length: int, announce: str) -> Dict:
+def metainfo(directory: str, piece_length: int, announce: List[List[str]]) -> Dict:
     """Return a metainfo dictionary describing the content of the directory"""
+    if not announce or not announce[0]:
+        raise ValueError("Empty announce list")
+
     buffer = b''
     hashes = []
     filestats = []
@@ -630,8 +606,13 @@ def metainfo(directory: str, piece_length: int, announce: str) -> Dict:
     if buffer:
         hashes.append(sha1(buffer).digest())
 
+    announce_list = []
+    for trackers in announce:
+        announce_list.append(list(map(lambda x: x.encode('utf-8'), trackers)))
+
     m = {
-        b'announce': announce.encode('utf-8'),
+        b'announce': announce_list[0][0],
+        b'announce-list': announce_list,
         b'info': {
             b'pieces': b"".join(hashes),
             b'piece length': piece_length,
@@ -668,6 +649,19 @@ def _validate_structure(data, schema) -> bool:
         return all(tests)
     else:
         return isinstance(data, type(schema))
+
+
+# TODO: Duplicate
+def _split(l: List, n: int) -> List:
+    """Split the list l in chunks of size n"""
+    if n < 0:
+        raise ValueError("n must be >= 0")
+    i = 0
+    chunks = []
+    while l[i:i + n]:
+        chunks.append(l[i:i + n])
+        i = i + n
+    return chunks
 
 
 if __name__ == '__main__':

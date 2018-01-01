@@ -53,7 +53,8 @@ class TestMetainfo(unittest.TestCase):
                     m_target = bdecode(f.read())
 
                 piece_length = m_target[b'info'][b'piece length']
-                m_computed = metainfo(dirpath, piece_length, 'http://example.com:8080/announce')
+                announce_list = [['http://example.com:8080/announce']]
+                m_computed = metainfo(dirpath, piece_length, announce_list)
 
                 if b'files' in m_target[b'info']:
                     info_keys = [b'files']
@@ -133,6 +134,7 @@ class TestMetainfo(unittest.TestCase):
             loop.run_until_complete(t.stop())
             shutil.rmtree(tmp_dir)
 
+        loop.stop()
         loop.close()
 
 

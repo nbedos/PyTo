@@ -8,10 +8,9 @@ Specifications:
 
 import aiohttp
 import logging
-import struct
 import urllib.parse
 
-from typing import List, Tuple
+from pyto.utilities import split, decode_ipv4
 
 from pyto.bencoding import bdecode
 
@@ -69,7 +68,7 @@ class Tracker(object):
             async with session.get(url) as response:
                 print(response.status)
                 d = bdecode(await response.read())
-                return map(_decode_ipv4, _split(d[b'peers'], 6))
+                return map(decode_ipv4, split(d[b'peers'], 6))
 
     async def get_peers(self, uploaded: int, downloaded: int, left: int):
         for event in {Tracker._EVENT_STARTED, Tracker._EVENT_EMPTY}:
@@ -103,26 +102,4 @@ class Tracker(object):
         url = self._build_url(uploaded, downloaded, left)
         response = await self._request(url)
         return response
-
-
-def _split(l: List, n: int) -> List:
-    """Split the list l in chunks of size n"""
-    if n < 0:
-        raise ValueError("n must be >= 0")
-    i = 0
-    chunks = []
-    while l[i:i + n]:
-        chunks.append(l[i:i + n])
-        i = i + n
-    return chunks
-
-
-def _decode_ipv4(buffer: bytes) -> Tuple[str, int]:
-    try:
-        ip_str, port = struct.unpack(">4sH", buffer)
-        ip = ".".join([str(n) for n, in struct.iter_unpack(">B", ip_str)])
-        return ip, port
-    except struct.error:
-        pass
-    raise ValueError("Invalid (ip, port)")
 

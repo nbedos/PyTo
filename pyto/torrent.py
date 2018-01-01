@@ -15,6 +15,7 @@ from pyto.messages import Message, KeepAlive, Choke, Unchoke, Interested, NotInt
 from pyto.peer import Peer, PeerConnectErrors, PeerWriteErrors
 from pyto.piecemanager import PieceManager
 from pyto.tracker import Tracker
+from pyto.utilities import intersection, sanitize, split, path_components, validate_structure
 
 
 module_logger = logging.getLogger(__name__)
@@ -56,7 +57,7 @@ class Torrent:
     """Represent a Torrent file"""
     def __init__(self, announce: List[List[str]], name: str, contents, info_hash: bytes,
                  hashes: List[bytes], piece_length: int):
-        self.name = _sanitize(name)
+        self.name = sanitize(name)
         self.contents = contents
         self.structure = {}
         self.info_hash = info_hash
@@ -109,9 +110,9 @@ class Torrent:
             m = bdecode(f.read())
 
         # TODO: check type of optional items
-        if _validate_structure(m, METAINFO_SINGLE_FILE):
+        if validate_structure(m, METAINFO_SINGLE_FILE):
             single_file_mode = True
-        elif _validate_structure(m, METAINFO_MULTIPLE_FILES):
+        elif validate_structure(m, METAINFO_MULTIPLE_FILES):
             single_file_mode = False
         else:
             raise ValueError("Invalid torrent file")
@@ -128,15 +129,15 @@ class Torrent:
             announce_decoded.append(list(map(lambda x: x.decode('utf-8'), trackers)))
 
         name = info[b'name'].decode("utf-8")
-        hashes = _split(info[b'pieces'], sha1().digest_size)
+        hashes = split(info[b'pieces'], sha1().digest_size)
         piece_length = info[b'piece length']
 
         contents = []
         if single_file_mode:
-            contents.append(("", _sanitize(name), info[b"length"]))
+            contents.append(("", sanitize(name), info[b"length"]))
         else:
             for file_dict in info[b'files']:
-                path_str = [_sanitize(b.decode("utf-8")) for b in file_dict[b'path']]
+                path_str = [sanitize(b.decode("utf-8")) for b in file_dict[b'path']]
                 directory = os.path.join("", *path_str[:-1])
                 filename = path_str[-1]
                 contents.append((directory, filename, file_dict[b'length']))
@@ -205,7 +206,7 @@ class Torrent:
         piece = b""
         for file_bounds, (file, lock) in self.structure.items():
             file_offset, _ = file_bounds
-            interval = _intersection(file_bounds, piece_bounds)
+            interval = intersection(file_bounds, piece_bounds)
             if interval is not None:
                 part_offset_in_file = interval[0] - file_offset
                 part_length = interval[1] - interval[0] + 1
@@ -237,7 +238,7 @@ class Torrent:
             piece_bounds = piece_offset, piece_offset + current_piece_length - 1
             for file_bounds, (file, lock) in self.structure.items():
                 file_offset, _ = file_bounds
-                interval = _intersection(file_bounds, piece_bounds)
+                interval = intersection(file_bounds, piece_bounds)
                 if interval is not None:
                     part_offset_in_file = interval[0] - file_offset
                     part_length = interval[1] - interval[0] + 1
@@ -538,45 +539,6 @@ class Torrent:
         await self.stop()
 
 
-def _sanitize(filename: str) -> str:
-    """Remove potentially treacherous characters from a path name"""
-    allowed_characters = {' ', '-', '[', ']', '}', '{', '_', '.'}
-    return "".join([c for c in filename if c.isalnum() or c in allowed_characters]).rstrip()
-
-def _intersection(interval1: Tuple[int, int], interval2: Tuple[int, int]):
-    """Return the intersection of two closed intervals as an interval
-
-    If the two intervals do not overlap, return None"""
-    (a, b), (c, d) = interval1, interval2
-    assert (a <= b) and (c <= d)
-
-    lower_bound = max(a, c)
-    upper_bound = min(b, d)
-
-    if lower_bound <= upper_bound:
-        return lower_bound, upper_bound
-
-    return None
-
-
-def _path_components(mypath: str) -> List[str]:
-    """Return the list of components in mypath:
-        _path_components("A/B/C/D") = ['A', 'B', 'C', 'D']
-    """
-    components = []
-    head = mypath
-    while True:
-        head, tail = os.path.split(head)
-        if tail:
-            components.insert(0, tail)
-        else:
-            if head:
-                components.insert(0, head)
-            break
-
-    return components
-
-
 def metainfo(directory: str, piece_length: int, announce: List[List[str]]) -> Dict:
     """Return a metainfo dictionary describing the content of the directory"""
     if not announce or not announce[0]:
@@ -591,7 +553,7 @@ def metainfo(directory: str, piece_length: int, announce: List[List[str]]) -> Di
             full_path = os.path.join(dirpath, filename)
             relative_path = os.path.relpath(full_path, directory)
             filestats.append({
-                b'path': [c.encode('utf-8') for c in _path_components(relative_path)],
+                b'path': [c.encode('utf-8') for c in path_components(relative_path)],
                 b'length': os.path.getsize(full_path)
             })
             with open(full_path, "rb") as f:
@@ -629,39 +591,6 @@ def metainfo(directory: str, piece_length: int, announce: List[List[str]]) -> Di
         m[b'info'][b'name'] = os.path.basename(tail).encode('utf-8')
         m[b'info'][b'files'] = filestats
     return m
-
-
-def _validate_structure(data, schema) -> bool:
-    """Check if the structure of 'data' conforms to 'schema'
-
-    'schema' is a (minimal) data structure such as for example:
-        s = {'announce': 'text', 'length': 1}
-
-    Dictionaries in 'data' may have keys not found in schema
-
-    Restriction: Elements of lists are checked against the first element of the corresponding
-    list in schema: this makes it impossible to validate lists containing different types"""
-    if isinstance(data, dict) and isinstance(schema, dict):
-        tests = [key in data and _validate_structure(data[key], schema[key]) for key in schema]
-        return all(tests)
-    elif isinstance(data, list):
-        tests = [_validate_structure(value, schema[0]) for value in data]
-        return all(tests)
-    else:
-        return isinstance(data, type(schema))
-
-
-# TODO: Duplicate
-def _split(l: List, n: int) -> List:
-    """Split the list l in chunks of size n"""
-    if n < 0:
-        raise ValueError("n must be >= 0")
-    i = 0
-    chunks = []
-    while l[i:i + n]:
-        chunks.append(l[i:i + n])
-        i = i + n
-    return chunks
 
 
 if __name__ == '__main__':

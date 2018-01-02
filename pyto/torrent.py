@@ -57,6 +57,7 @@ class Torrent:
     """Represent a Torrent file"""
     def __init__(self, announce: List[List[str]], name: str, contents, info_hash: bytes,
                  hashes: List[bytes], piece_length: int):
+        # Metainfo
         self.name = sanitize(name)
         self.contents = contents
         self.structure = {}
@@ -66,20 +67,19 @@ class Torrent:
         self.piece_manager = PieceManager(self.length, piece_length)
         self._is_complete = False
 
+        # Peers
         self.server = None
         self.peers = dict([])
         self.blacklist = dict([])
         self.pending = dict([])
 
+        # Future bookkeeping
         self.futures = set([])
 
+        # Trackers
         peer_id = "-PY00000000000000000"
         port = 6881
-        self.trackers = []
-        # TODO: Fully implement http://bittorrent.org/beps/bep_0012.html for announce-list
-        for trackers in announce:
-            if trackers:
-                self.trackers.append(Tracker(trackers[0], self.info_hash, peer_id, port))
+        self.tracker = Tracker(announce, self.info_hash, peer_id, port)
 
         self.logger = TorrentAdapter(module_logger, {'name': self.name})
         self.queue = asyncio.Queue(50)
@@ -481,11 +481,8 @@ class Torrent:
         pending_connections = set()
 
         # Schedule a query for the tracker
-        f_trackers = set()
-        for tracker in self.trackers:
-            f = asyncio.ensure_future(tracker.get_peers(0, 0, 0))
-            f_trackers.add(f)
-            self.futures.add(f)
+        f_tracker = asyncio.ensure_future(self.tracker.get_peers(0, 0, 0))
+        self.futures.add(f_tracker)
 
         # Setup a 'server' to accept incoming connections
         def accept_callback(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
@@ -519,6 +516,7 @@ class Torrent:
                     pass
                 # We catch ALL exceptions here, otherwise one of our futures may fail silently
                 except Exception:
+                    # TODO: Clean up after exchange() failed: remove peer from list, etc...
                     self.logger.exception("Future failed")
                     await self.stop()
                     raise
@@ -528,8 +526,7 @@ class Torrent:
                         f = asyncio.ensure_future(self.exchange(p))
                         self.futures.add(f)
                         pending_connections.remove(item)
-                    elif item in f_trackers:
-                        f_trackers.remove(item)
+                    elif item == f_tracker:
                         for ip, port in result:
                             f = asyncio.ensure_future(Peer.from_ip(ip, port, self.name))
                             self.futures.add(f)

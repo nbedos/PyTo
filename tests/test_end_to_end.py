@@ -53,23 +53,13 @@ def two_peer_swarm(data_dir, seeder_port=6881, leecher_port=6882):
     async def mock_get_peers(r, *_):
         return r
 
-    # Start seeder
+    # Start seeder and override get_peers method to return an empty list
     torrent_seeder = loop.run_until_complete(Torrent.create(torrent_file, seeder_dir))
-    # Override get_peers method to return an empty list
-    trackers = []
-    for tracker in torrent_seeder.trackers:
-        tracker.get_peers = functools.partial(mock_get_peers, [])
-        trackers.append(tracker)
-    torrent_seeder.trackers = trackers
-
-    # Start leecher
+    torrent_seeder.tracker.get_peers = functools.partial(mock_get_peers, [])
+    # Start leecher and override get_peers method to return the address of the seeder
     torrent_leecher = loop.run_until_complete(Torrent.create(torrent_file, leecher_dir))
-    # Override get_peers method to return the address of the seeder
-    trackers = []
-    for tracker in torrent_leecher.trackers:
-        tracker.get_peers = functools.partial(mock_get_peers, [("127.0.0.1", seeder_port)])
-        trackers.append(tracker)
-    torrent_leecher.trackers = trackers
+    torrent_leecher.tracker.get_peers = functools.partial(mock_get_peers,
+                                                          [("127.0.0.1", seeder_port)])
 
     async def wait_for(torrent: Torrent, events: List[str]):
         event = None

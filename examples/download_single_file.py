@@ -18,7 +18,7 @@ from pyto.torrent import Torrent
 
 
 DATA_DIR = os.path.join(EXAMPLES_DIR, 'data')
-arch_torrent = os.path.join(DATA_DIR, "archlinux-2017.12.01-x86_64.iso.torrent")
+arch_torrent = os.path.join(DATA_DIR, "archlinux-2018.03.01-x86_64.iso.torrent")
 
 
 def main():

@@ -83,7 +83,8 @@ class Peer:
     async def connect(self):
         if self.reader is None and self.writer is None:
             try:
-                self.reader, self.writer = await asyncio.open_connection(self.ip, self.port)
+                coro = asyncio.open_connection(self.ip, self.port)
+                self.reader, self.writer = await asyncio.wait_for(coro, REQUEST_TIMEOUT)
             except PeerConnectErrors as e:
                 self.logger.debug("Connection failed: {}".format(e))
                 raise ConnectionError("Connection failed")
@@ -102,7 +103,8 @@ class Peer:
         Raise EOFError in case of error or when the connection is closed"""
         try:
             # TODO: timeout
-            data = await self.reader.readexactly(nbr_bytes)
+            coro = self.reader.readexactly(nbr_bytes)
+            data = await asyncio.wait_for(coro, REQUEST_TIMEOUT)
         except PeerConnectErrors as e:
             self.logger.debug("readexactly() failed: {}".format(e))
             self.close()
